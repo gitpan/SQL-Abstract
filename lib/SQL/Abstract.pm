@@ -15,7 +15,7 @@ use Scalar::Util ();
 # GLOBALS
 #======================================================================
 
-our $VERSION  = '1.62';
+our $VERSION  = '1.63';
 
 # This would confuse some packagers
 #$VERSION      = eval $VERSION; # numify for warning-free dev releases
@@ -84,7 +84,7 @@ sub new {
 
   # generic SQL comparison operators
   my $anchored_cmp_ops = join ('|', map { '^' . $_ . '$' } (
-    '(?:is \s+)? (?:not \s+)? like',
+    '(?:is \s+)? (?:not \s+)? i? like',
     'is',
     (map { quotemeta($_) } (qw/ < > != <> = <= >= /) ),
   ));
