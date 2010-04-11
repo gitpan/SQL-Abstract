@@ -27,4 +27,4 @@ requires:
   perl: 5.6.2
 resources:
   license: http://dev.perl.org/licenses/
-version: 1.64
+version: 1.65

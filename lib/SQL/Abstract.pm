@@ -15,10 +15,10 @@ use Scalar::Util ();
 # GLOBALS
 #======================================================================
 
-our $VERSION  = '1.64';
+our $VERSION  = '1.65';
 
 # This would confuse some packagers
-#$VERSION      = eval $VERSION; # numify for warning-free dev releases
+$VERSION = eval $VERSION if $VERSION =~ /_/; # numify for warning-free dev releases
 
 our $AUTOLOAD;
 
