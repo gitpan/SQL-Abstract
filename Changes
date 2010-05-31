@@ -1,5 +1,12 @@
 Revision history for SQL::Abstract
 
+revision 1.67  2010-05-31 14:21 (UTC)
+----------------------------
+    - Fix SQL::Test failure when first chunk is an unrecognized
+      literal
+    - Generic -not operator tests
+    - More columns-bindtype assertion checks
+
 revision 1.66  2010-04-27 02:44 (UTC)
 ----------------------------
     - Optimized the quoting mechanism, winning nearly 10%
