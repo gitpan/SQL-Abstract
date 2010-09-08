@@ -8,7 +8,7 @@ inc/Module/Install/Makefile.pm
 inc/Module/Install/Metadata.pm
 inc/Module/Install/Win32.pm
 inc/Module/Install/WriteAll.pm
-lib/DBIx/Class/Storage/PrettyPrinter.pm
+lib/DBIx/Class/Storage/Debug/PrettyPrint.pm
 lib/SQL/Abstract.pm
 lib/SQL/Abstract/Test.pm
 lib/SQL/Abstract/Tree.pm
