@@ -13,8 +13,10 @@ all_from 'lib/SQL/Abstract.pm';
 requires 'List::Util'   => 0;
 requires 'Scalar::Util' => 0;
 requires 'Class::Accessor::Grouped' => 0.09005;
+requires 'Hash::Merge' => 0.12;
 
 test_requires "Test::More"      => 0.92;
+test_requires "Test::Deep"      => 0.106;
 test_requires "Test::Exception" => 0;
 test_requires "Test::Warn"      => 0;
 test_requires "Storable"        => 0;   # for cloning in tests

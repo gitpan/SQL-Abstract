@@ -5,11 +5,30 @@ use warnings;
 use Carp;
 
 use List::Util;
+use Hash::Merge 'merge';
+
+Hash::Merge::specify_behavior({
+   SCALAR => {
+      SCALAR => sub { $_[1] },
+      ARRAY  => sub { [ $_[0], @{$_[1]} ] },
+      HASH   => sub { $_[1] },
+   },
+   ARRAY => {
+      SCALAR => sub { $_[1] },
+      ARRAY  => sub { $_[1] },
+      HASH   => sub { $_[1] },
+   },
+   HASH => {
+      SCALAR => sub { $_[1] },
+      ARRAY  => sub { [ values %{$_[0]}, @{$_[1]} ] },
+      HASH   => sub { Hash::Merge::_merge_hashes( $_[0], $_[1] ) },
+   },
+}, 'My Behavior' );
 
 use base 'Class::Accessor::Grouped';
 
 __PACKAGE__->mk_group_accessors( simple => $_ ) for qw(
-   newline indent_string indent_amount colormap indentmap
+   newline indent_string indent_amount colormap indentmap fill_in_placeholders
 );
 
 # Parser states for _recurse_parse()
@@ -103,6 +122,7 @@ my %indents = (
 
 my %profiles = (
    console => {
+      fill_in_placeholders => 1,
       indent_string => ' ',
       indent_amount => 2,
       newline       => "\n",
@@ -110,6 +130,7 @@ my %profiles = (
       indentmap     => { %indents },
    },
    console_monochrome => {
+      fill_in_placeholders => 1,
       indent_string => ' ',
       indent_amount => 2,
       newline       => "\n",
@@ -117,6 +138,7 @@ my %profiles = (
       indentmap     => { %indents },
    },
    html => {
+      fill_in_placeholders => 1,
       indent_string => '&nbsp;',
       indent_amount => 2,
       newline       => "<br />\n",
@@ -167,10 +189,11 @@ eval {
 };
 
 sub new {
-   my ($class, $args) = @_;
+   my $class = shift;
+   my $args  = shift || {};
 
    my $profile = delete $args->{profile} || 'none';
-   my $data = {%{$profiles{$profile}}, %{$args||{}}};
+   my $data = merge( $profiles{$profile}, $args );
 
    bless $data, $class
 }
@@ -278,6 +301,13 @@ sub format_keyword {
   return $keyword
 }
 
+my %starters = (
+   select        => 1,
+   update        => 1,
+   'insert into' => 1,
+   'delete from' => 1,
+);
+
 sub whitespace {
    my ($self, $keyword, $depth) = @_;
 
@@ -285,7 +315,7 @@ sub whitespace {
    if (defined $self->indentmap->{lc $keyword}) {
       $before = $self->newline . $self->indent($depth + $self->indentmap->{lc $keyword});
    }
-   $before = '' if $depth == 0 and lc $keyword eq 'select';
+   $before = '' if $depth == 0 and defined $starters{lc $keyword};
    return [$before, ' '];
 }
 
@@ -298,8 +328,20 @@ sub _is_key {
    defined $tree && defined $self->indentmap->{lc $tree};
 }
 
+sub _fill_in_placeholder {
+   my ($self, $bindargs) = @_;
+
+   if ($self->fill_in_placeholders) {
+      my $val = pop @{$bindargs} || '';
+      $val =~ s/\\/\\\\/g;
+      $val =~ s/'/\\'/g;
+      return qq('$val')
+   }
+   return '?'
+}
+
 sub unparse {
-  my ($self, $tree, $depth) = @_;
+  my ($self, $tree, $bindargs, $depth) = @_;
 
   $depth ||= 0;
 
@@ -311,27 +353,30 @@ sub unparse {
   my $cdr = $tree->[1];
 
   if (ref $car) {
-    return join ('', map $self->unparse($_, $depth), @$tree);
+    return join ('', map $self->unparse($_, $bindargs, $depth), @$tree);
   }
   elsif ($car eq 'LITERAL') {
+    if ($cdr->[0] eq '?') {
+      return $self->_fill_in_placeholder($bindargs)
+    }
     return $cdr->[0];
   }
   elsif ($car eq 'PAREN') {
     return '(' .
       join(' ',
-        map $self->unparse($_, $depth + 2), @{$cdr}) .
+        map $self->unparse($_, $bindargs, $depth + 2), @{$cdr}) .
     ($self->_is_key($cdr)?( $self->newline||'' ).$self->indent($depth + 1):'') . ') ';
   }
   elsif ($car eq 'OR' or $car eq 'AND' or (grep { $car =~ /^ $_ $/xi } @binary_op_keywords ) ) {
-    return join (" $car ", map $self->unparse($_, $depth), @{$cdr});
+    return join (" $car ", map $self->unparse($_, $bindargs, $depth), @{$cdr});
   }
   else {
     my ($l, $r) = @{$self->whitespace($car, $depth)};
-    return sprintf "$l%s %s$r", $self->format_keyword($car), $self->unparse($cdr, $depth);
+    return sprintf "$l%s %s$r", $self->format_keyword($car), $self->unparse($cdr, $bindargs, $depth);
   }
 }
 
-sub format { my $self = shift; $self->unparse($self->parse(@_)) }
+sub format { my $self = shift; $self->unparse($self->parse($_[0]), $_[1]) }
 
 1;
 
@@ -353,8 +398,40 @@ sub format { my $self = shift; $self->unparse($self->parse(@_)) }
 
  my $sqla_tree = SQL::Abstract::Tree->new({ profile => 'console' });
 
+ $args = {
+   profile => 'console',      # predefined profile to use (default: 'none')
+   fill_in_placeholders => 1, # true for placeholder population
+   indent_string => ' ',      # the string used when indenting
+   indent_amount => 2,        # how many of above string to use for a single
+                              # indent level
+   newline       => "\n",     # string for newline
+   colormap      => {
+     select => [RED, RESET], # a pair of strings defining what to surround
+                             # the keyword with for colorization
+     # ...
+   },
+   indentmap     => {
+     select        => 0,     # A zero means that the keyword will start on
+                             # a new line
+     from          => 1,     # Any other positive integer means that after
+     on            => 2,     # said newline it will get that many indents
+     # ...
+   },
+ }
+
+Returns a new SQL::Abstract::Tree object.  All arguments are optional.
+
+=head3 profiles
+
+There are four predefined profiles, C<none>, C<console>, C<console_monochrome>,
+and C<html>.  Typically a user will probably just use C<console> or
+C<console_monochrome>, but if something about a profile bothers you, merely
+use the profile and override the parts that you don't like.
+
 =head2 format
 
- $sqlat->format('SELECT * FROM bar')
+ $sqlat->format('SELECT * FROM bar WHERE x = ?', [1])
 
-Returns a formatting string based on wthe string passed in
+Takes C<$sql> and C<\@bindargs>.
+
+Returns a formatting string based on the string passed in

@@ -9,6 +9,7 @@ inc/Module/Install/Metadata.pm
 inc/Module/Install/Win32.pm
 inc/Module/Install/WriteAll.pm
 lib/DBIx/Class/Storage/Debug/PrettyPrint.pm
+lib/DBIx/Class/Storage/PrettyPrinter.pm
 lib/SQL/Abstract.pm
 lib/SQL/Abstract/Test.pm
 lib/SQL/Abstract/Tree.pm
@@ -28,6 +29,7 @@ t/08special_ops.t
 t/09refkind.t
 t/10test.t
 t/11unparse.t
+t/12confmerge.t
 t/12format_keyword.t
 t/13whitespace_keyword.t
 t/14roundtrippin.t
