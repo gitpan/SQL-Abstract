@@ -5,9 +5,11 @@ use warnings;
 use Carp;
 
 use List::Util;
-use Hash::Merge 'merge';
+use Hash::Merge;
 
-Hash::Merge::specify_behavior({
+my $merger = Hash::Merge->new;
+
+$merger->specify_behavior({
    SCALAR => {
       SCALAR => sub { $_[1] },
       ARRAY  => sub { [ $_[0], @{$_[1]} ] },
@@ -29,6 +31,7 @@ use base 'Class::Accessor::Grouped';
 
 __PACKAGE__->mk_group_accessors( simple => $_ ) for qw(
    newline indent_string indent_amount colormap indentmap fill_in_placeholders
+   placeholder_surround
 );
 
 # Parser states for _recurse_parse()
@@ -123,6 +126,7 @@ my %indents = (
 my %profiles = (
    console => {
       fill_in_placeholders => 1,
+      placeholder_surround => ['?/', ''],
       indent_string => ' ',
       indent_amount => 2,
       newline       => "\n",
@@ -131,6 +135,7 @@ my %profiles = (
    },
    console_monochrome => {
       fill_in_placeholders => 1,
+      placeholder_surround => ['?/', ''],
       indent_string => ' ',
       indent_amount => 2,
       newline       => "\n",
@@ -139,6 +144,7 @@ my %profiles = (
    },
    html => {
       fill_in_placeholders => 1,
+      placeholder_surround => ['<span class="placeholder">', '</span>'],
       indent_string => '&nbsp;',
       indent_amount => 2,
       newline       => "<br />\n",
@@ -167,6 +173,10 @@ my %profiles = (
 
 eval {
    require Term::ANSIColor;
+
+   $profiles{console}->{placeholder_surround} =
+      [Term::ANSIColor::color('black on_cyan'), Term::ANSIColor::color('reset')];
+
    $profiles{console}->{colormap} = {
       select        => [Term::ANSIColor::color('red'), Term::ANSIColor::color('reset')],
       'insert into' => [Term::ANSIColor::color('red'), Term::ANSIColor::color('reset')],
@@ -193,7 +203,7 @@ sub new {
    my $args  = shift || {};
 
    my $profile = delete $args->{profile} || 'none';
-   my $data = merge( $profiles{$profile}, $args );
+   my $data = $merger->merge( $profiles{$profile}, $args );
 
    bless $data, $class
 }
@@ -308,7 +318,7 @@ my %starters = (
    'delete from' => 1,
 );
 
-sub whitespace {
+sub pad_keyword {
    my ($self, $keyword, $depth) = @_;
 
    my $before = '';
@@ -328,14 +338,15 @@ sub _is_key {
    defined $tree && defined $self->indentmap->{lc $tree};
 }
 
-sub _fill_in_placeholder {
+sub fill_in_placeholder {
    my ($self, $bindargs) = @_;
 
    if ($self->fill_in_placeholders) {
       my $val = pop @{$bindargs} || '';
+      my ($left, $right) = @{$self->placeholder_surround};
       $val =~ s/\\/\\\\/g;
       $val =~ s/'/\\'/g;
-      return qq('$val')
+      return qq('$left$val$right')
    }
    return '?'
 }
@@ -357,7 +368,7 @@ sub unparse {
   }
   elsif ($car eq 'LITERAL') {
     if ($cdr->[0] eq '?') {
-      return $self->_fill_in_placeholder($bindargs)
+      return $self->fill_in_placeholder($bindargs)
     }
     return $cdr->[0];
   }
@@ -371,7 +382,7 @@ sub unparse {
     return join (" $car ", map $self->unparse($_, $bindargs, $depth), @{$cdr});
   }
   else {
-    my ($l, $r) = @{$self->whitespace($car, $depth)};
+    my ($l, $r) = @{$self->pad_keyword($car, $depth)};
     return sprintf "$l%s %s$r", $self->format_keyword($car), $self->unparse($cdr, $bindargs, $depth);
   }
 }
@@ -401,6 +412,8 @@ sub format { my $self = shift; $self->unparse($self->parse($_[0]), $_[1]) }
  $args = {
    profile => 'console',      # predefined profile to use (default: 'none')
    fill_in_placeholders => 1, # true for placeholder population
+   placeholder_surround =>    # The strings that will be wrapped around
+              [GREEN, RESET], # populated placeholders if the above is set
    indent_string => ' ',      # the string used when indenting
    indent_amount => 2,        # how many of above string to use for a single
                               # indent level
@@ -435,3 +448,71 @@ use the profile and override the parts that you don't like.
 Takes C<$sql> and C<\@bindargs>.
 
 Returns a formatting string based on the string passed in
+
+=head2 parse
+
+ $sqlat->parse('SELECT * FROM bar WHERE x = ?')
+
+Returns a "tree" representing passed in SQL.  Please do not depend on the
+structure of the returned tree.  It may be stable at some point, but not yet.
+
+=head2 unparse
+
+ $sqlat->parse($tree_structure, \@bindargs)
+
+Transform "tree" into SQL, applying various transforms on the way.
+
+=head2 format_keyword
+
+ $sqlat->format_keyword('SELECT')
+
+Currently this just takes a keyword and puts the C<colormap> stuff around it.
+Later on it may do more and allow for coderef based transforms.
+
+=head2 pad_keyword
+
+ my ($before, $after) = @{$sqlat->pad_keyword('SELECT')};
+
+Returns whitespace to be inserted around a keyword.
+
+=head2 fill_in_placeholder
+
+ my $value = $sqlat->fill_in_placeholder(\@bindargs)
+
+Removes last arg from passed arrayref and returns it, surrounded with
+the values in placeholder_surround, and then surrounded with single quotes.
+
+=head2 indent
+
+Returns as many indent strings as indent amounts times the first argument.
+
+=head1 ACCESSORS
+
+=head2 colormap
+
+See L</new>
+
+=head2 fill_in_placeholders
+
+See L</new>
+
+=head2 indent_amount
+
+See L</new>
+
+=head2 indent_string
+
+See L</new>
+
+=head2 indentmap
+
+See L</new>
+
+=head2 newline
+
+See L</new>
+
+=head2 placeholder_surround
+
+See L</new>
+
