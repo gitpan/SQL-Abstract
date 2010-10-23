@@ -27,10 +27,11 @@ no_index:
     - DBIx::Class::Storage::Debug::PrettyPrint
 requires:
   Class::Accessor::Grouped: 0.09005
+  Getopt::Long::Descriptive: 0.086
   Hash::Merge: 0.12
   List::Util: 0
   Scalar::Util: 0
   perl: 5.6.2
 resources:
   license: http://dev.perl.org/licenses/
-version: 1.68
+version: 1.69

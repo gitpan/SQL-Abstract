@@ -6,9 +6,11 @@ inc/Module/Install/Can.pm
 inc/Module/Install/Fetch.pm
 inc/Module/Install/Makefile.pm
 inc/Module/Install/Metadata.pm
+inc/Module/Install/Scripts.pm
 inc/Module/Install/Win32.pm
 inc/Module/Install/WriteAll.pm
 lib/DBIx/Class/Storage/Debug/PrettyPrint.pm
+lib/DBIx/Class/Storage/PrettyPrinter.pm
 lib/SQL/Abstract.pm
 lib/SQL/Abstract/Test.pm
 lib/SQL/Abstract/Tree.pm
@@ -33,5 +35,6 @@ t/12format_keyword.t
 t/13whitespace_keyword.t
 t/14roundtrippin.t
 t/15placeholders.t
+t/16no_sideeffects.t
 t/90pod.t
 t/91podcoverage.t

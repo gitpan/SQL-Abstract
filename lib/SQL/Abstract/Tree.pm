@@ -2,10 +2,17 @@ package SQL::Abstract::Tree;
 
 use strict;
 use warnings;
+no warnings 'qw';
 use Carp;
 
-use List::Util;
-use Hash::Merge;
+use Hash::Merge qw//;
+
+use base 'Class::Accessor::Grouped';
+
+__PACKAGE__->mk_group_accessors( simple => $_ ) for qw(
+   newline indent_string indent_amount colormap indentmap fill_in_placeholders
+   placeholder_surround
+);
 
 my $merger = Hash::Merge->new;
 
@@ -25,27 +32,22 @@ $merger->specify_behavior({
       ARRAY  => sub { [ values %{$_[0]}, @{$_[1]} ] },
       HASH   => sub { Hash::Merge::_merge_hashes( $_[0], $_[1] ) },
    },
-}, 'My Behavior' );
+}, 'SQLA::Tree Behavior' );
 
-use base 'Class::Accessor::Grouped';
+my $op_look_ahead = '(?: (?= [\s\)\(\;] ) | \z)';
+my $op_look_behind = '(?: (?<= [\,\s\)\(] ) | \A )';
 
-__PACKAGE__->mk_group_accessors( simple => $_ ) for qw(
-   newline indent_string indent_amount colormap indentmap fill_in_placeholders
-   placeholder_surround
-);
+my $quote_left = qr/[\`\'\"\[]/;
+my $quote_right = qr/[\`\'\"\]]/;
 
-# Parser states for _recurse_parse()
-use constant PARSE_TOP_LEVEL => 0;
-use constant PARSE_IN_EXPR => 1;
-use constant PARSE_IN_PARENS => 2;
-use constant PARSE_RHS => 3;
+my $placeholder_re = qr/(?: \? | \$\d+ )/x;
 
 # These SQL keywords always signal end of the current expression (except inside
 # of a parenthesized subexpression).
-# Format: A list of strings that will be compiled to extended syntax (ie.
+# Format: A list of strings that will be compiled to extended syntax ie.
 # /.../x) regexes, without capturing parentheses. They will be automatically
-# anchored to word boundaries to match the whole token).
-my @expression_terminator_sql_keywords = (
+# anchored to op boundaries (excluding quotes) to match the whole token.
+my @expression_start_keywords = (
   'SELECT',
   'UPDATE',
   'INSERT \s+ INTO',
@@ -54,18 +56,20 @@ my @expression_terminator_sql_keywords = (
   'SET',
   '(?:
     (?:
-        (?: \b (?: LEFT | RIGHT | FULL ) \s+ )?
-        (?: \b (?: CROSS | INNER | OUTER ) \s+ )?
+        (?: (?: LEFT | RIGHT | FULL ) \s+ )?
+        (?: (?: CROSS | INNER | OUTER ) \s+ )?
     )?
     JOIN
   )',
   'ON',
   'WHERE',
-  'VALUES',
+  '(?: DEFAULT \s+ )? VALUES',
   'EXISTS',
   'GROUP \s+ BY',
   'HAVING',
   'ORDER \s+ BY',
+  'SKIP',
+  'FIRST',
   'LIMIT',
   'OFFSET',
   'FOR',
@@ -76,35 +80,63 @@ my @expression_terminator_sql_keywords = (
   'ROW_NUMBER \s* \( \s* \) \s+ OVER',
 );
 
+my $expr_start_re = join ("\n\t|\n", @expression_start_keywords );
+$expr_start_re = qr/ $op_look_behind (?i: $expr_start_re ) $op_look_ahead /x;
+
 # These are binary operator keywords always a single LHS and RHS
 # * AND/OR are handled separately as they are N-ary
 # * so is NOT as being unary
 # * BETWEEN without paranthesis around the ANDed arguments (which
 #   makes it a non-binary op) is detected and accomodated in
 #   _recurse_parse()
-my $stuff_around_mathops = qr/[\w\s\`\'\"\)]/;
-my @binary_op_keywords = (
-  ( map
-    {
-      ' ^ '  . quotemeta ($_) . "(?= \$ | $stuff_around_mathops ) ",
-      " (?<= $stuff_around_mathops)" . quotemeta ($_) . "(?= \$ | $stuff_around_mathops ) ",
-    }
-    (qw/< > != <> = <= >=/)
-  ),
-  ( map
-    { '\b (?: NOT \s+)?' . $_ . '\b' }
-    (qw/IN BETWEEN LIKE/)
-  ),
+
+# this will be included in the $binary_op_re, the distinction is interesting during
+# testing as one is tighter than the other, plus mathops have different look
+# ahead/behind (e.g. "x"="y" )
+my @math_op_keywords = (qw/ < > != <> = <= >= /);
+my $math_re = join ("\n\t|\n", map
+  { "(?: (?<= [\\w\\s] | $quote_right ) | \\A )"  . quotemeta ($_) . "(?: (?= [\\w\\s] | $quote_left ) | \\z )" }
+  @math_op_keywords
+);
+$math_re = qr/$math_re/x;
+
+sub _math_op_re { $math_re }
+
+
+my $binary_op_re = '(?: NOT \s+)? (?:' . join ('|', qw/IN BETWEEN R?LIKE/) . ')';
+$binary_op_re = join "\n\t|\n",
+  "$op_look_behind (?i: $binary_op_re ) $op_look_ahead",
+  $math_re,
+  $op_look_behind . 'IS (?:\s+ NOT)?' . "(?= \\s+ NULL \\b | $op_look_ahead )",
+;
+$binary_op_re = qr/$binary_op_re/x;
+
+sub _binary_op_re { $binary_op_re }
+
+my $all_known_re = join("\n\t|\n",
+  $expr_start_re,
+  $binary_op_re,
+  "$op_look_behind (?i: AND|OR|NOT ) $op_look_ahead",
+  (map { quotemeta $_ } qw/, ( ) */),
+  $placeholder_re,
 );
 
-my $tokenizer_re_str = join("\n\t|\n",
-  ( map { '\b' . $_ . '\b' } @expression_terminator_sql_keywords, 'AND', 'OR', 'NOT'),
-  @binary_op_keywords,
-);
+$all_known_re = qr/$all_known_re/x;
 
-my $tokenizer_re = qr/ \s* ( $tokenizer_re_str | \( | \) | \? ) \s* /xi;
+#this one *is* capturing for the split below
+# splits on whitespace if all else fails
+my $tokenizer_re = qr/ \s* ( $all_known_re ) \s* | \s+ /x;
 
-sub _binary_op_keywords { @binary_op_keywords }
+# Parser states for _recurse_parse()
+use constant PARSE_TOP_LEVEL => 0;
+use constant PARSE_IN_EXPR => 1;
+use constant PARSE_IN_PARENS => 2;
+use constant PARSE_IN_FUNC => 3;
+use constant PARSE_RHS => 4;
+
+my $expr_term_re = qr/ ^ (?: $expr_start_re | \) ) $/x;
+my $rhs_term_re = qr/ ^ (?: $expr_term_re | $binary_op_re | (?i: AND | OR | NOT | \, ) ) $/x;
+my $func_start_re = qr/^ (?: \* | $placeholder_re | \( ) $/x;
 
 my %indents = (
    select        => 0,
@@ -121,6 +153,10 @@ my %indents = (
    set           => 1,
    into          => 1,
    values        => 1,
+   limit         => 1,
+   offset        => 1,
+   skip          => 1,
+   first         => 1,
 );
 
 my %profiles = (
@@ -132,6 +168,38 @@ my %profiles = (
       newline       => "\n",
       colormap      => {},
       indentmap     => { %indents },
+
+      eval { require Term::ANSIColor }
+        ? do {
+          my $c = \&Term::ANSIColor::color;
+          (
+            placeholder_surround => [q(') . $c->('black on_magenta'), $c->('reset') . q(')],
+            colormap => {
+              select        => [$c->('red'), $c->('reset')],
+              'insert into' => [$c->('red'), $c->('reset')],
+              update        => [$c->('red'), $c->('reset')],
+              'delete from' => [$c->('red'), $c->('reset')],
+
+              set           => [$c->('cyan'), $c->('reset')],
+              from          => [$c->('cyan'), $c->('reset')],
+
+              where         => [$c->('green'), $c->('reset')],
+              values        => [$c->('yellow'), $c->('reset')],
+
+              join          => [$c->('magenta'), $c->('reset')],
+              'left join'   => [$c->('magenta'), $c->('reset')],
+              on            => [$c->('blue'), $c->('reset')],
+
+              'group by'    => [$c->('yellow'), $c->('reset')],
+              'order by'    => [$c->('yellow'), $c->('reset')],
+
+              skip          => [$c->('green'), $c->('reset')],
+              first         => [$c->('green'), $c->('reset')],
+              limit         => [$c->('green'), $c->('reset')],
+              offset        => [$c->('green'), $c->('reset')],
+            }
+          );
+        } : (),
    },
    console_monochrome => {
       fill_in_placeholders => 1,
@@ -153,15 +221,24 @@ my %profiles = (
          'insert into' => ['<span class="insert-into">'  , '</span>'],
          update        => ['<span class="select">'  , '</span>'],
          'delete from' => ['<span class="delete-from">'  , '</span>'],
-         where         => ['<span class="where">'   , '</span>'],
+
+         set           => ['<span class="set">', '</span>'],
          from          => ['<span class="from">'    , '</span>'],
+
+         where         => ['<span class="where">'   , '</span>'],
+         values        => ['<span class="values">', '</span>'],
+
          join          => ['<span class="join">'    , '</span>'],
+         'left join'   => ['<span class="left-join">','</span>'],
          on            => ['<span class="on">'      , '</span>'],
+
          'group by'    => ['<span class="group-by">', '</span>'],
          'order by'    => ['<span class="order-by">', '</span>'],
-         set           => ['<span class="set">', '</span>'],
-         into          => ['<span class="into">', '</span>'],
-         values        => ['<span class="values">', '</span>'],
+
+         skip          => ['<span class="skip">',   '</span>'],
+         first         => ['<span class="first">',  '</span>'],
+         limit         => ['<span class="limit">',  '</span>'],
+         offset        => ['<span class="offset">', '</span>'],
       },
       indentmap     => { %indents },
    },
@@ -170,33 +247,6 @@ my %profiles = (
       indentmap     => {},
    },
 );
-
-eval {
-   require Term::ANSIColor;
-
-   $profiles{console}->{placeholder_surround} =
-      [Term::ANSIColor::color('black on_cyan'), Term::ANSIColor::color('reset')];
-
-   $profiles{console}->{colormap} = {
-      select        => [Term::ANSIColor::color('red'), Term::ANSIColor::color('reset')],
-      'insert into' => [Term::ANSIColor::color('red'), Term::ANSIColor::color('reset')],
-      update        => [Term::ANSIColor::color('red'), Term::ANSIColor::color('reset')],
-      'delete from' => [Term::ANSIColor::color('red'), Term::ANSIColor::color('reset')],
-
-      set           => [Term::ANSIColor::color('cyan'), Term::ANSIColor::color('reset')],
-      from          => [Term::ANSIColor::color('cyan'), Term::ANSIColor::color('reset')],
-
-      where         => [Term::ANSIColor::color('green'), Term::ANSIColor::color('reset')],
-      values        => [Term::ANSIColor::color('yellow'), Term::ANSIColor::color('reset')],
-
-      join          => [Term::ANSIColor::color('magenta'), Term::ANSIColor::color('reset')],
-      'left join'   => [Term::ANSIColor::color('magenta'), Term::ANSIColor::color('reset')],
-      on            => [Term::ANSIColor::color('blue'), Term::ANSIColor::color('reset')],
-
-      'group by'    => [Term::ANSIColor::color('yellow'), Term::ANSIColor::color('reset')],
-      'order by'    => [Term::ANSIColor::color('yellow'), Term::ANSIColor::color('reset')],
-   };
-};
 
 sub new {
    my $class = shift;
@@ -214,11 +264,15 @@ sub parse {
   # tokenize string, and remove all optional whitespace
   my $tokens = [];
   foreach my $token (split $tokenizer_re, $s) {
-    push @$tokens, $token if (length $token) && ($token =~ /\S/);
+    push @$tokens, $token if (
+      defined $token
+        and
+      length $token
+        and
+      $token =~ /\S/
+    );
   }
-
-  my $tree = $self->_recurse_parse($tokens, PARSE_TOP_LEVEL);
-  return $tree;
+  $self->_recurse_parse($tokens, PARSE_TOP_LEVEL);
 }
 
 sub _recurse_parse {
@@ -232,11 +286,13 @@ sub _recurse_parse {
           or
         ($state == PARSE_IN_PARENS && $lookahead eq ')')
           or
-        ($state == PARSE_IN_EXPR && grep { $lookahead =~ /^ $_ $/xi } ('\)', @expression_terminator_sql_keywords ) )
+        ($state == PARSE_IN_EXPR && $lookahead =~ $expr_term_re )
           or
-        ($state == PARSE_RHS && grep { $lookahead =~ /^ $_ $/xi } ('\)', @expression_terminator_sql_keywords, @binary_op_keywords, 'AND', 'OR', 'NOT' ) )
+        ($state == PARSE_RHS && $lookahead =~ $rhs_term_re )
+          or
+        ($state == PARSE_IN_FUNC && $lookahead !~ $func_start_re) # if there are multiple values - the parenthesis will switch the $state
     ) {
-      return $left;
+      return $left||();
     }
 
     my $token = shift @$tokens;
@@ -247,24 +303,25 @@ sub _recurse_parse {
       $token = shift @$tokens   or croak "missing closing ')' around block " . $self->unparse($right);
       $token eq ')'             or croak "unexpected token '$token' terminating block " . $self->unparse($right);
 
-      $left = $left ? [@$left, [PAREN => [$right] ]]
-                    : [PAREN  => [$right] ];
+      $left = $left ? [$left, [PAREN => [$right||()] ]]
+                    : [PAREN  => [$right||()] ];
     }
-    # AND/OR
-    elsif ($token =~ /^ (?: OR | AND ) $/xi )  {
-      my $op = uc $token;
+    # AND/OR and LIST (,)
+    elsif ($token =~ /^ (?: OR | AND | \, ) $/xi )  {
+      my $op = ($token eq ',') ? 'LIST' : uc $token;
+
       my $right = $self->_recurse_parse($tokens, PARSE_IN_EXPR);
 
       # Merge chunks if logic matches
       if (ref $right and $op eq $right->[0]) {
-        $left = [ (shift @$right ), [$left, map { @$_ } @$right] ];
+        $left = [ (shift @$right ), [$left||(), map { @$_ } @$right] ];
       }
       else {
-       $left = [$op => [$left, $right]];
+        $left = [$op => [ $left||(), $right||() ]];
       }
     }
     # binary operator keywords
-    elsif (grep { $token =~ /^ $_ $/xi } @binary_op_keywords ) {
+    elsif ( $token =~ /^ $binary_op_re $ /x ) {
       my $op = uc $token;
       my $right = $self->_recurse_parse($tokens, PARSE_RHS);
 
@@ -278,25 +335,39 @@ sub _recurse_parse {
       $left = [$op => [$left, $right] ];
     }
     # expression terminator keywords (as they start a new expression)
-    elsif (grep { $token =~ /^ $_ $/xi } @expression_terminator_sql_keywords ) {
+    elsif ( $token =~ / ^ $expr_start_re $ /x ) {
       my $op = uc $token;
       my $right = $self->_recurse_parse($tokens, PARSE_IN_EXPR);
-      $left = $left ? [ $left,  [$op => [$right] ]]
-                    : [ $op => [$right] ];
+      $left = $left ? [ $left,  [$op => [$right||()] ]]
+                   : [ $op => [$right||()] ];
     }
-    # NOT (last as to allow all other NOT X pieces first)
-    elsif ( $token =~ /^ not $/ix ) {
+    # NOT
+    elsif ( $token =~ /^ NOT $/ix ) {
       my $op = uc $token;
       my $right = $self->_recurse_parse ($tokens, PARSE_RHS);
       $left = $left ? [ @$left, [$op => [$right] ]]
                     : [ $op => [$right] ];
 
     }
-    # literal (eat everything on the right until RHS termination)
+    elsif ( $token =~ $placeholder_re) {
+      $left = $left ? [ $left, [ PLACEHOLDER => [ $token ] ] ]
+                    : [ PLACEHOLDER => [ $token ] ];
+    }
+    # we're now in "unknown token" land - start eating tokens until
+    # we see something familiar
     else {
-      my $right = $self->_recurse_parse ($tokens, PARSE_RHS);
-      $left = $left ? [ $left, [LITERAL => [join ' ', $token, $self->unparse($right)||()] ] ]
-                    : [ LITERAL => [join ' ', $token, $self->unparse($right)||()] ];
+      my $right;
+
+      # check if the current token is an unknown op-start
+      if (@$tokens and $tokens->[0] =~ $func_start_re) {
+        $right = [ $token => [ $self->_recurse_parse($tokens, PARSE_IN_FUNC) || () ] ];
+      }
+      else {
+        $right = [ LITERAL => [ $token ] ];
+      }
+
+      $left = $left ? [ $left, $right ]
+                    : $right;
     }
   }
 }
@@ -326,7 +397,7 @@ sub pad_keyword {
       $before = $self->newline . $self->indent($depth + $self->indentmap->{lc $keyword});
    }
    $before = '' if $depth == 0 and defined $starters{lc $keyword};
-   return [$before, ' '];
+   return [$before, ''];
 }
 
 sub indent { ($_[0]->indent_string||'') x ( ( $_[0]->indent_amount || 0 ) * $_[1] ) }
@@ -342,48 +413,65 @@ sub fill_in_placeholder {
    my ($self, $bindargs) = @_;
 
    if ($self->fill_in_placeholders) {
-      my $val = pop @{$bindargs} || '';
+      my $val = shift @{$bindargs} || '';
       my ($left, $right) = @{$self->placeholder_surround};
       $val =~ s/\\/\\\\/g;
       $val =~ s/'/\\'/g;
-      return qq('$left$val$right')
+      return qq($left$val$right)
    }
    return '?'
 }
 
+# FIXME - terrible name for a user facing API
 sub unparse {
+  my ($self, $tree, $bindargs) = @_;
+  $self->_unparse($tree, [@{$bindargs||[]}], 0);
+}
+
+sub _unparse {
   my ($self, $tree, $bindargs, $depth) = @_;
 
-  $depth ||= 0;
-
-  if (not $tree ) {
+  if (not $tree or not @$tree) {
     return '';
   }
 
-  my $car = $tree->[0];
-  my $cdr = $tree->[1];
+  my ($car, $cdr) = @{$tree}[0,1];
+
+  if (! defined $car or (! ref $car and ! defined $cdr) ) {
+    require Data::Dumper;
+    Carp::confess( sprintf ( "Internal error - malformed branch at depth $depth:\n%s",
+      Data::Dumper::Dumper($tree)
+    ) );
+  }
 
   if (ref $car) {
-    return join ('', map $self->unparse($_, $bindargs, $depth), @$tree);
+    return join (' ', map $self->_unparse($_, $bindargs, $depth), @$tree);
   }
   elsif ($car eq 'LITERAL') {
-    if ($cdr->[0] eq '?') {
-      return $self->fill_in_placeholder($bindargs)
-    }
     return $cdr->[0];
   }
-  elsif ($car eq 'PAREN') {
-    return '(' .
-      join(' ',
-        map $self->unparse($_, $bindargs, $depth + 2), @{$cdr}) .
-    ($self->_is_key($cdr)?( $self->newline||'' ).$self->indent($depth + 1):'') . ') ';
+  elsif ($car eq 'PLACEHOLDER') {
+    return $self->fill_in_placeholder($bindargs);
   }
-  elsif ($car eq 'OR' or $car eq 'AND' or (grep { $car =~ /^ $_ $/xi } @binary_op_keywords ) ) {
-    return join (" $car ", map $self->unparse($_, $bindargs, $depth), @{$cdr});
+  elsif ($car eq 'PAREN') {
+    return sprintf ('(%s)',
+      join (' ', map { $self->_unparse($_, $bindargs, $depth + 2) } @{$cdr} )
+        .
+      ($self->_is_key($cdr)
+        ? ( $self->newline||'' ) . $self->indent($depth + 1)
+        : ''
+      )
+    );
+  }
+  elsif ($car eq 'AND' or $car eq 'OR' or $car =~ / ^ $binary_op_re $ /x ) {
+    return join (" $car ", map $self->_unparse($_, $bindargs, $depth), @{$cdr});
+  }
+  elsif ($car eq 'LIST' ) {
+    return join (', ', map $self->_unparse($_, $bindargs, $depth), @{$cdr});
   }
   else {
     my ($l, $r) = @{$self->pad_keyword($car, $depth)};
-    return sprintf "$l%s %s$r", $self->format_keyword($car), $self->unparse($cdr, $bindargs, $depth);
+    return sprintf "$l%s %s$r", $self->format_keyword($car), $self->_unparse($cdr, $bindargs, $depth);
   }
 }
 
