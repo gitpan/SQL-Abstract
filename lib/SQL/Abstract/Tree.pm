@@ -76,6 +76,12 @@ my @expression_start_keywords = (
   'UNION',
   'INTERSECT',
   'EXCEPT',
+  'BEGIN \s+ WORK',
+  'COMMIT',
+  'ROLLBACK \s+ TO \s+ SAVEPOINT',
+  'ROLLBACK',
+  'SAVEPOINT',
+  'RELEASE \s+ SAVEPOINT',
   'RETURNING',
   'ROW_NUMBER \s* \( \s* \) \s+ OVER',
 );
@@ -148,6 +154,7 @@ my %indents = (
    join          => 1,
    'left join'   => 1,
    on            => 2,
+   having        => 0,
    'group by'    => 0,
    'order by'    => 0,
    set           => 1,
@@ -167,36 +174,52 @@ my %profiles = (
       indent_amount => 2,
       newline       => "\n",
       colormap      => {},
-      indentmap     => { %indents },
+      indentmap     => \%indents,
 
       eval { require Term::ANSIColor }
         ? do {
           my $c = \&Term::ANSIColor::color;
+
+          my $red     = [$c->('red')    , $c->('reset')];
+          my $cyan    = [$c->('cyan')   , $c->('reset')];
+          my $green   = [$c->('green')  , $c->('reset')];
+          my $yellow  = [$c->('yellow') , $c->('reset')];
+          my $blue    = [$c->('blue')   , $c->('reset')];
+          my $magenta = [$c->('magenta'), $c->('reset')];
+          my $b_o_w   = [$c->('black on_white'), $c->('reset')];
           (
-            placeholder_surround => [q(') . $c->('black on_magenta'), $c->('reset') . q(')],
+            placeholder_surround => [$c->('black on_magenta'), $c->('reset')],
             colormap => {
-              select        => [$c->('red'), $c->('reset')],
-              'insert into' => [$c->('red'), $c->('reset')],
-              update        => [$c->('red'), $c->('reset')],
-              'delete from' => [$c->('red'), $c->('reset')],
+              'begin work'            => $b_o_w,
+              commit                  => $b_o_w,
+              rollback                => $b_o_w,
+              savepoint               => $b_o_w,
+              'rollback to savepoint' => $b_o_w,
+              'release savepoint'     => $b_o_w,
 
-              set           => [$c->('cyan'), $c->('reset')],
-              from          => [$c->('cyan'), $c->('reset')],
+              select                  => $red,
+              'insert into'           => $red,
+              update                  => $red,
+              'delete from'           => $red,
 
-              where         => [$c->('green'), $c->('reset')],
-              values        => [$c->('yellow'), $c->('reset')],
+              set                     => $cyan,
+              from                    => $cyan,
 
-              join          => [$c->('magenta'), $c->('reset')],
-              'left join'   => [$c->('magenta'), $c->('reset')],
-              on            => [$c->('blue'), $c->('reset')],
+              where                   => $green,
+              values                  => $yellow,
 
-              'group by'    => [$c->('yellow'), $c->('reset')],
-              'order by'    => [$c->('yellow'), $c->('reset')],
+              join                    => $magenta,
+              'left join'             => $magenta,
+              on                      => $blue,
 
-              skip          => [$c->('green'), $c->('reset')],
-              first         => [$c->('green'), $c->('reset')],
-              limit         => [$c->('green'), $c->('reset')],
-              offset        => [$c->('green'), $c->('reset')],
+              'group by'              => $yellow,
+              having                  => $yellow,
+              'order by'              => $yellow,
+
+              skip                    => $green,
+              first                   => $green,
+              limit                   => $green,
+              offset                  => $green,
             }
           );
         } : (),
@@ -208,7 +231,7 @@ my %profiles = (
       indent_amount => 2,
       newline       => "\n",
       colormap      => {},
-      indentmap     => { %indents },
+      indentmap     => \%indents,
    },
    html => {
       fill_in_placeholders => 1,
@@ -233,14 +256,22 @@ my %profiles = (
          on            => ['<span class="on">'      , '</span>'],
 
          'group by'    => ['<span class="group-by">', '</span>'],
+         having        => ['<span class="having">',   '</span>'],
          'order by'    => ['<span class="order-by">', '</span>'],
 
          skip          => ['<span class="skip">',   '</span>'],
          first         => ['<span class="first">',  '</span>'],
          limit         => ['<span class="limit">',  '</span>'],
          offset        => ['<span class="offset">', '</span>'],
+
+         'begin work'  => ['<span class="begin-work">', '</span>'],
+         commit        => ['<span class="commit">', '</span>'],
+         rollback      => ['<span class="rollback">', '</span>'],
+         savepoint     => ['<span class="savepoint">', '</span>'],
+         'rollback to savepoint' => ['<span class="rollback-to-savepoint">', '</span>'],
+         'release savepoint'     => ['<span class="release-savepoint">', '</span>'],
       },
-      indentmap     => { %indents },
+      indentmap     => \%indents,
    },
    none => {
       colormap      => {},
@@ -253,6 +284,9 @@ sub new {
    my $args  = shift || {};
 
    my $profile = delete $args->{profile} || 'none';
+
+   die "No such profile '$profile'!" unless exists $profiles{$profile};
+
    my $data = $merger->merge( $profiles{$profile}, $args );
 
    bless $data, $class
@@ -414,9 +448,11 @@ sub fill_in_placeholder {
 
    if ($self->fill_in_placeholders) {
       my $val = shift @{$bindargs} || '';
+      my $quoted = $val =~ s/^(['"])(.*)\1$/$2/;
       my ($left, $right) = @{$self->placeholder_surround};
       $val =~ s/\\/\\\\/g;
       $val =~ s/'/\\'/g;
+      $val = qq('$val') if $quoted;
       return qq($left$val$right)
    }
    return '?'
@@ -454,7 +490,7 @@ sub _unparse {
     return $self->fill_in_placeholder($bindargs);
   }
   elsif ($car eq 'PAREN') {
-    return sprintf ('(%s)',
+    return sprintf ('( %s )',
       join (' ', map { $self->_unparse($_, $bindargs, $depth + 2) } @{$cdr} )
         .
       ($self->_is_key($cdr)
@@ -471,7 +507,15 @@ sub _unparse {
   }
   else {
     my ($l, $r) = @{$self->pad_keyword($car, $depth)};
-    return sprintf "$l%s %s$r", $self->format_keyword($car), $self->_unparse($cdr, $bindargs, $depth);
+
+    return sprintf "$l%s%s%s$r",
+      $self->format_keyword($car),
+      ( ref $cdr eq 'ARRAY' and ref $cdr->[0] eq 'ARRAY' and $cdr->[0][0] and $cdr->[0][0] eq 'PAREN' )
+        ? ''    # mysql--
+        : ' '
+      ,
+      $self->_unparse($cdr, $bindargs, $depth),
+    ;
   }
 }
 
@@ -480,6 +524,10 @@ sub format { my $self = shift; $self->unparse($self->parse($_[0]), $_[1]) }
 1;
 
 =pod
+
+=head1 NAME
+
+SQL::Abstract::Tree - Represent SQL as an AST
 
 =head1 SYNOPSIS
 
