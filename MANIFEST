@@ -1,10 +1,13 @@
 Changes
 examples/console.pl
 examples/dbic-console.pl
+inc/Module/AutoInstall.pm
 inc/Module/Install.pm
+inc/Module/Install/AutoInstall.pm
 inc/Module/Install/Base.pm
 inc/Module/Install/Can.pm
 inc/Module/Install/Fetch.pm
+inc/Module/Install/Include.pm
 inc/Module/Install/Makefile.pm
 inc/Module/Install/Metadata.pm
 inc/Module/Install/Scripts.pm
@@ -36,6 +39,7 @@ t/13whitespace_keyword.t
 t/14roundtrippin.t
 t/15placeholders.t
 t/16no_sideeffects.t
+t/20injection_guard.t
 t/90pod.t
 t/91podcoverage.t
 t/dbic/bulk-insert.t

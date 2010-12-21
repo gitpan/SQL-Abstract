@@ -10,6 +10,15 @@ use SQL::Abstract::Test import => ['is_same_sql_bind'];
 
 use SQL::Abstract;
 
+#### WARNING ####
+#
+# -nest has been undocumented on purpose, but is still supported for the
+# foreseable future. Do not rip out the -nest tests before speaking to
+# someone on the DBIC mailing list or in irc.perl.org#dbix-class
+#
+#################
+
+
 my @tests = (
       {
               func   => 'select',
@@ -442,8 +451,8 @@ my @tests = (
               func   => 'update',
               new    => {bindtype => 'columns'},
               args   => ['test', {a => 1, b => \["to_date(?, 'MM/DD/YY')", [{dummy => 1} => '02/02/02']], c => { -lower => 'foo' }}, {a => {'between', [1,2]}}],
-              stmt   => "UPDATE test SET a = ?, b = to_date(?, 'MM/DD/YY'), c = LOWER( ? ) WHERE ( a BETWEEN ? AND ? )",
-              stmt_q => "UPDATE `test` SET `a` = ?, `b` = to_date(?, 'MM/DD/YY'), `c` = LOWER ( ? ) WHERE ( `a` BETWEEN ? AND ? )",
+              stmt   => "UPDATE test SET a = ?, b = to_date(?, 'MM/DD/YY'), c = LOWER ? WHERE ( a BETWEEN ? AND ? )",
+              stmt_q => "UPDATE `test` SET `a` = ?, `b` = to_date(?, 'MM/DD/YY'), `c` = LOWER ? WHERE ( `a` BETWEEN ? AND ? )",
               bind   => [[a => '1'], [{dummy => 1} => '02/02/02'], [c => 'foo'], [a => '1'], [a => '2']],
       },
       {
