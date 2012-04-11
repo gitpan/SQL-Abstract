@@ -1,5 +1,15 @@
 Revision history for SQL::Abstract
 
+revision 1.72_01  2012-04-11 (1.73 will have to release with DBIx::Class 0.08197)
+----------------------------
+    - Fix parsing of NOT EXISTS
+    - Fix over-eager parenthesis unrolling
+    - Fix deep recursion warnings while parsing obnoxiously long sql statements
+    - Fix incorrect comparison of malformed lists
+    - Fix incorrect reporting of mismatch-members in SQLA::Test
+    - Migrate the -ident operator from DBIC into SQLA
+    - Migrate the -value operator from DBIC into SQLA
+
 revision 1.72  2010-12-21
 ----------------------------
     - Extra checks of search arguments for possible SQL injection attacks

@@ -32,7 +32,7 @@ t/07subqueries.t
 t/08special_ops.t
 t/09refkind.t
 t/10test.t
-t/11unparse.t
+t/11parser.t
 t/12confmerge.t
 t/12format_keyword.t
 t/13whitespace_keyword.t
@@ -40,6 +40,8 @@ t/14roundtrippin.t
 t/15placeholders.t
 t/16no_sideeffects.t
 t/20injection_guard.t
+t/21op_ident.t
+t/22op_value.t
 t/90pod.t
 t/91podcoverage.t
 t/dbic/bulk-insert.t
