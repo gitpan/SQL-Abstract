@@ -42,7 +42,6 @@ t/16no_sideeffects.t
 t/20injection_guard.t
 t/21op_ident.t
 t/22op_value.t
-t/23reassembly-bugs.t
 t/90pod.t
 t/91podcoverage.t
 t/dbic/bulk-insert.t

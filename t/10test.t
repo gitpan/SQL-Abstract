@@ -153,7 +153,7 @@ my @sql_tests = (
       },
       {
         equal => 0,
-        parenthesis_significant => 1,
+        opts => { parenthesis_significant => 1 },
         statements => [
           q/SELECT foo FROM bar WHERE a = 1 AND b = 1 AND c = 1/,
           q/SELECT foo FROM bar WHERE (a = 1 AND b = 1 AND c = 1)/,
@@ -164,7 +164,7 @@ my @sql_tests = (
       },
       {
         equal => 0,
-        parenthesis_significant => 1,
+        opts => { parenthesis_significant => 1 },
         statements => [
           q/SELECT foo FROM bar WHERE a = 1 OR b = 1 OR c = 1/,
           q/SELECT foo FROM bar WHERE (a = 1 OR b = 1) OR c = 1/,
@@ -174,7 +174,7 @@ my @sql_tests = (
       },
       {
         equal => 0,
-        parenthesis_significant => 1,
+        opts => { parenthesis_significant => 1 },
         statements => [
           q/SELECT foo FROM bar WHERE (a = 1) AND (b = 1 OR c = 1 OR d = 1) AND (e = 1 AND f = 1)/,
           q/SELECT foo FROM bar WHERE a = 1 AND (b = 1 OR c = 1 OR d = 1) AND e = 1 AND (f = 1)/,
@@ -260,7 +260,7 @@ my @sql_tests = (
       },
       {
         equal => 0,
-        parenthesis_significant => 1,
+        opts => { parenthesis_significant => 1 },
         statements => [
           q/SELECT foo FROM bar WHERE a IN (1,2,3)/,
           q/SELECT foo FROM bar WHERE a IN (1,3,2)/,
@@ -592,6 +592,34 @@ my @sql_tests = (
         ]
       },
 
+      # order by
+      {
+        equal => 1,
+        statements => [
+          q/SELECT * FROM foo ORDER BY bar/,
+          q/SELECT * FROM foo ORDER BY bar ASC/,
+          q/SELECT * FROM foo ORDER BY bar asc/,
+        ],
+      },
+      {
+        equal => 1,
+        statements => [
+          q/SELECT * FROM foo ORDER BY bar, baz ASC/,
+          q/SELECT * FROM foo ORDER BY bar ASC, baz/,
+          q/SELECT * FROM foo ORDER BY bar asc, baz ASC/,
+          q/SELECT * FROM foo ORDER BY bar, baz/,
+        ],
+      },
+      {
+        equal => 0,
+        opts => { order_by_asc_significant => 1 },
+        statements => [
+          q/SELECT * FROM foo ORDER BY bar/,
+          q/SELECT * FROM foo ORDER BY bar ASC/,
+          q/SELECT * FROM foo ORDER BY bar desc/,
+        ],
+      },
+
       # list permutations
       {
         equal => 0,
@@ -711,7 +739,26 @@ my @sql_tests = (
           'WHERE ( foo GLOB ? )',
           'WHERE foo GLOB ?',
         ],
-      }
+      },
+      {
+        equal => 1,
+        statements => [
+          'SELECT FIRST ? SKIP ? [me].[id], [me].[owner]
+            FROM [books] [me]
+          WHERE ( ( (EXISTS (
+            SELECT FIRST ? SKIP ? [owner].[id]
+              FROM [owners] [owner]
+            WHERE ( [books].[owner] = [owner].[id] )
+          )) AND [source] = ? ) )',
+          'SELECT FIRST ? SKIP ? [me].[id], [me].[owner]
+            FROM [books] [me]
+          WHERE ( ( EXISTS (
+            SELECT FIRST ? SKIP ? [owner].[id]
+              FROM [owners] [owner]
+            WHERE ( [books].[owner] = [owner].[id] )
+          ) AND [source] = ? ) )',
+        ],
+      },
 );
 
 my @bind_tests = (
@@ -924,14 +971,23 @@ use_ok('SQL::Abstract::Test', import => [qw(
 )]);
 
 for my $test (@sql_tests) {
+
+  # this does not work on 5.8.8 and earlier :(
+  #local @{*SQL::Abstract::Test::}{keys %{$test->{opts}}} = map { \$_ } values %{$test->{opts}}
+  #  if $test->{opts};
+
+  my %restore_globals;
+
+  for (keys %{$test->{opts} || {} }) {
+    $restore_globals{$_} = ${${*SQL::Abstract::Test::}{$_}};
+    ${*SQL::Abstract::Test::}{$_} = \ do { my $cp = $test->{opts}{$_} };
+  }
+
   my $statements = $test->{statements};
   while (@$statements) {
     my $sql1 = shift @$statements;
     foreach my $sql2 (@$statements) {
 
-      no warnings qw/once/; # perl 5.10 is dumb
-      local $SQL::Abstract::Test::parenthesis_significant = $test->{parenthesis_significant}
-        if $test->{parenthesis_significant};
       my $equal = eq_sql($sql1, $sql2);
 
       TODO: {
@@ -956,6 +1012,9 @@ for my $test (@sql_tests) {
       }
     }
   }
+
+  ${*SQL::Abstract::Test::}{$_} = \$restore_globals{$_}
+    for keys %restore_globals;
 }
 
 for my $test (@bind_tests) {
