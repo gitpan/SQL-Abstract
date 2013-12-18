@@ -15,7 +15,7 @@ use Scalar::Util ();
 # GLOBALS
 #======================================================================
 
-our $VERSION  = '1.74';
+our $VERSION  = '1.74_01';
 
 # This would confuse some packagers
 $VERSION = eval $VERSION if $VERSION =~ /_/; # numify for warning-free dev releases
@@ -86,7 +86,7 @@ sub new {
   # default comparison is "=", but can be overridden
   $opt{cmp} ||= '=';
 
-  # try to recognize which are the 'equality' and 'unequality' ops
+  # try to recognize which are the 'equality' and 'inequality' ops
   # (temporary quickfix, should go through a more seasoned API)
   $opt{equality_op}   = qr/^(\Q$opt{cmp}\E|is|(is\s+)?like)$/i;
   $opt{inequality_op} = qr/^(!=|<>|(is\s+)?not(\s+like)?)$/i;
@@ -104,7 +104,7 @@ sub new {
   $opt{unary_ops} ||= [];
   push @{$opt{unary_ops}}, @BUILTIN_UNARY_OPS;
 
-  # rudimentary saniy-check for user supplied bits treated as functions/operators
+  # rudimentary sanity-check for user supplied bits treated as functions/operators
   # If a purported  function matches this regular expression, an exception is thrown.
   # Literal SQL is *NOT* subject to this check, only functions (and column names
   # when quoting is not in effect)
@@ -1051,7 +1051,12 @@ sub _where_field_IN {
               $self->_where_unary_op ($1 => $arg);
             },
             UNDEF => sub {
-              return $self->_sqlcase('null');
+              puke(
+                'SQL::Abstract before v1.75 used to generate incorrect SQL when the '
+              . "-$op operator was given an undef-containing list: !!!AUDIT YOUR CODE "
+              . 'AND DATA!!! (the upcoming Data::Query-based version of SQL::Abstract '
+              . 'will emit the logically correct SQL instead of raising this exception)'
+              );
             },
           });
           push @all_sql, $sql;
@@ -1084,8 +1089,12 @@ sub _where_field_IN {
       return ("$label $op ( $sql )", @bind);
     },
 
+    UNDEF => sub {
+      puke "Argument passed to the '$op' operator can not be undefined";
+    },
+
     FALLBACK => sub {
-      puke "special op 'in' requires an arrayref (or scalarref/arrayref-ref)";
+      puke "special op $op requires an arrayref (or scalarref/arrayref-ref)";
     },
   });
 
@@ -1699,7 +1708,7 @@ C<cmp> to C<like> you would get SQL such as:
 
     WHERE name like 'nwiger' AND email like 'nate@wiger.org'
 
-You can also override the comparsion on an individual basis - see
+You can also override the comparison on an individual basis - see
 the huge section on L</"WHERE CLAUSES"> at the bottom.
 
 =item sqltrue, sqlfalse
@@ -2231,7 +2240,8 @@ would generate:
     )";
     @bind = ('2000');
 
-
+Finally, if the argument to C<-in> is not a reference, it will be
+treated as a single-element array.
 
 Another pair of operators is C<-between> and C<-not_between>,
 used with an arrayref of two values:
@@ -2431,7 +2441,7 @@ Note that if you were to simply say:
         array => [1, 2, 3]
     );
 
-the result would porbably be not what you wanted:
+the result would probably not be what you wanted:
 
     $stmt = 'WHERE array = ? OR array = ? OR array = ?';
     @bind = (1, 2, 3);

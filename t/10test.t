@@ -611,6 +611,20 @@ my @sql_tests = (
         ],
       },
       {
+        equal => 1,
+        statements => [
+          q/ORDER BY colA, colB LIKE ? DESC, colC LIKE ?/,
+          q/ORDER BY colA ASC, colB LIKE ? DESC, colC LIKE ? ASC/,
+        ],
+      },
+      {
+        equal => 1,
+        statements => [
+          q/ORDER BY name + ?, [me].[id]/,
+          q/ORDER BY name + ? ASC, [me].[id]/,
+        ],
+      },
+      {
         equal => 0,
         opts => { order_by_asc_significant => 1 },
         statements => [
@@ -953,24 +967,11 @@ my @bind_tests = (
   },
 );
 
-plan tests => 1 +
-  sum(
-    map { $_ * ($_ - 1) / 2 }
-      map { scalar @{$_->{statements}} }
-        @sql_tests
-  ) +
-  sum(
-    map { $_ * ($_ - 1) / 2 }
-      map { scalar @{$_->{bindvals}} }
-        @bind_tests
-  ) +
-  9;
-
 use_ok('SQL::Abstract::Test', import => [qw(
   eq_sql_bind eq_sql eq_bind is_same_sql_bind
 )]);
 
-for my $test (@sql_tests) {
+for my $test ( @sql_tests ) {
 
   # this does not work on 5.8.8 and earlier :(
   #local @{*SQL::Abstract::Test::}{keys %{$test->{opts}}} = map { \$_ } values %{$test->{opts}}
@@ -1091,3 +1092,4 @@ like(
   'expected debug of missing branch',
 );
 
+done_testing;

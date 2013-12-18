@@ -619,7 +619,7 @@ is_deeply($sqlat->parse("SELECT x, y FROM foo WHERE x IN (?, ?, ?, ?)"), [
   ]
 ], 'Lists parsed correctly');
 
-is_deeply($sqlat->parse('SELECT foo FROM bar ORDER BY x + ? DESC, oomph, y - ? DESC, unf, baz.g / ? ASC, buzz * 0 DESC, foo DESC, ickk ASC'), [
+is_deeply($sqlat->parse('SELECT foo FROM bar ORDER BY x + ? DESC, oomph, y - ? DESC, unf, baz.g / ? ASC, buzz * 0 DESC, foo LIKE ? DESC, ickk ASC'), [
   [
     "SELECT",
     [
@@ -665,15 +665,15 @@ is_deeply($sqlat->parse('SELECT foo FROM bar ORDER BY x + ? DESC, oomph, y - ? D
                     [
                       "+"
                     ]
+                  ],
+                  [
+                    "-PLACEHOLDER",
+                    [
+                      "?"
+                    ]
                   ]
                 ]
               ],
-              [
-                "-PLACEHOLDER",
-                [
-                  "?"
-                ]
-              ]
             ]
           ],
           [
@@ -699,15 +699,15 @@ is_deeply($sqlat->parse('SELECT foo FROM bar ORDER BY x + ? DESC, oomph, y - ? D
                     [
                       "-"
                     ]
-                  ]
+                  ],
+                  [
+                    "-PLACEHOLDER",
+                    [
+                      "?"
+                    ]
+                  ],
                 ]
               ],
-              [
-                "-PLACEHOLDER",
-                [
-                  "?"
-                ]
-              ]
             ]
           ],
           [
@@ -733,15 +733,15 @@ is_deeply($sqlat->parse('SELECT foo FROM bar ORDER BY x + ? DESC, oomph, y - ? D
                     [
                       "/"
                     ]
-                  ]
+                  ],
+                  [
+                    "-PLACEHOLDER",
+                    [
+                      "?"
+                    ]
+                  ],
                 ]
               ],
-              [
-                "-PLACEHOLDER",
-                [
-                  "?"
-                ]
-              ]
             ]
           ],
           [
@@ -776,11 +776,22 @@ is_deeply($sqlat->parse('SELECT foo FROM bar ORDER BY x + ? DESC, oomph, y - ? D
             "-DESC",
             [
               [
-                "-LITERAL",
+                "LIKE",
                 [
-                  "foo"
-                ]
-              ]
+                  [
+                    "-LITERAL",
+                    [
+                      "foo"
+                    ]
+                  ],
+                  [
+                    "-PLACEHOLDER",
+                    [
+                      "?"
+                    ]
+                  ],
+                ],
+              ],
             ]
           ],
           [
@@ -948,45 +959,45 @@ is_deeply( $sqlat->parse("META SELECT * * FROM (SELECT *, FROM foobar baz buzz) 
             ]
           ],
           [
-            "=",
+            "-MISC",
             [
               [
-                "-LITERAL",
+                "=",
                 [
-                  "foo.a"
-                ]
-              ],
-              [
-                "-MISC",
-                [
+                  [
+                    "-LITERAL",
+                    [
+                      "foo.a"
+                    ]
+                  ],
                   [
                     "-PLACEHOLDER",
                     [
                       "?"
                     ]
                   ],
-                  [
-                    "-LITERAL",
-                    [
-                      "STUFF"
-                    ]
-                  ]
                 ],
               ],
               [
-                'moar',
+                "-LITERAL",
+                [
+                  "STUFF"
+                ]
+              ],
+            ],
+          ],
+          [
+            'moar',
+            [
+              [
+                '-PAREN',
                 [
                   [
-                    '-PAREN',
+                    '-LITERAL',
                     [
-                      [
-                        '-LITERAL',
-                        [
-                          'stuff'
-                        ]
-                      ]
+                      'stuff'
                     ]
-                  ]
+                 ]
                 ]
               ]
             ]
@@ -1109,19 +1120,16 @@ is_deeply( $sqlat->parse("META SELECT * * FROM (SELECT *, FROM foobar baz buzz) 
             ],
           ],
           [
-            "max",
-            [
-              [
                 "-DESC",
                 [
                   [
                     "-MISC",
                     [
                       [
-                        "-MISC",
+                        "-DESC",
                         [
                           [
-                            "-DESC",
+                            "max",
                             [
                               [
                                 "-PAREN",
@@ -1134,22 +1142,20 @@ is_deeply( $sqlat->parse("META SELECT * * FROM (SELECT *, FROM foobar baz buzz) 
                                   ]
                                 ]
                               ]
-                            ]
-                          ],
-                          [
-                            "-LITERAL",
-                            [
-                              "x"
-                            ]
-                          ],
+                            ],
+                          ]
                         ]
                       ],
                       [
                         "-LITERAL",
                         [
-                          "z"
+                          "x"
                         ]
-                      ]
+                      ],
+                  [
+                    "-LITERAL",
+                    [
+                      "z"
                     ]
                   ]
                 ]
