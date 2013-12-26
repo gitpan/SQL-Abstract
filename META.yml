@@ -24,6 +24,7 @@ no_index:
     - examples
     - inc
     - t
+    - xt
   package:
     - DBIx::Class::Storage::Debug::PrettyPrint
 requires:
@@ -37,4 +38,4 @@ resources:
   bugtracker: http://rt.cpan.org/NoAuth/Bugs.html?Dist=SQL-Abstract
   license: http://dev.perl.org/licenses/
   repository: git://git.shadowcat.co.uk/dbsrgits/SQL-Abstract.git
-version: 1.74_01
+version: 1.74_02

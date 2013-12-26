@@ -1,12 +1,10 @@
-#!/usr/bin/perl
-
 use strict;
 use warnings;
 use Test::More;
+use Test::Warn;
 use Test::Exception;
-use SQL::Abstract::Test import => ['is_same_sql_bind'];
+use SQL::Abstract::Test import => [qw(is_same_sql_bind diag_where)];
 
-use Data::Dumper;
 use SQL::Abstract;
 
 my @in_between_tests = (
@@ -64,6 +62,26 @@ my @in_between_tests = (
     bind => [],
     test => '-between with literal sql with a literal (\"\'this\' AND \'that\'")',
   },
+
+  # generate a set of invalid -between tests
+  ( map { {
+    where => { x => { -between => $_ } },
+    test => 'invalid -between args',
+    throws => qr|Operator 'BETWEEN' requires either an arrayref with two defined values or expressions, or a single literal scalarref/arrayref-ref|,
+  } } (
+    [ 1, 2, 3 ],
+    [ 1, undef, 3 ],
+    [ undef, 2, 3 ],
+    [ 1, 2, undef ],
+    [ 1, undef ],
+    [ undef, 2 ],
+    [ undef, undef ],
+    [ 1 ],
+    [ undef ],
+    [],
+    1,
+    undef,
+  )),
   {
     where => {
       start0 => { -between => [ 1, { -upper => 2 } ] },
@@ -131,10 +149,12 @@ my @in_between_tests = (
     bind => [],
     test => '-in with a literal scalarref',
   },
+
+  # note that outer parens are opened even though literal was requested below
   {
     parenthesis_significant => 1,
     where => { x => { -in => \['( ( ?,?,lower(y) ) )', 1, 2] } },
-    stmt => "WHERE ( x IN ( ?,?,lower(y) ) )",  # note that outer parens are opened even though literal was requested (RIBASUSHI)
+    stmt => "WHERE ( x IN ( ?,?,lower(y) ) )",
     bind => [1, 2],
     test => '-in with a literal arrayrefref',
   },
@@ -143,7 +163,6 @@ my @in_between_tests = (
     where => {
       status => { -in => \"(SELECT status_codes\nFROM states)" },
     },
-    # failed to open outer parens on a multi-line query in 1.61 (semifor)
     stmt => " WHERE ( status IN ( SELECT status_codes FROM states )) ",
     bind => [],
     test => '-in multi-line subquery test',
@@ -166,6 +185,7 @@ my @in_between_tests = (
     bind => [2000],
     test => '-in POD test',
   },
+
   {
     where => { x => { -in => [ \['LOWER(?)', 'A' ], \'LOWER(b)', { -lower => 'c' } ] } },
     stmt => " WHERE ( x IN ( LOWER(?), LOWER(b), LOWER ? ) )",
@@ -173,7 +193,7 @@ my @in_between_tests = (
     test => '-in with an array of function array refs with args',
   },
   {
-    exception => qr/
+    throws => qr/
       \QSQL::Abstract before v1.75 used to generate incorrect SQL \E
       \Qwhen the -IN operator was given an undef-containing list: \E
       \Q!!!AUDIT YOUR CODE AND DATA!!! (the upcoming Data::Query-based \E
@@ -183,10 +203,10 @@ my @in_between_tests = (
     where => { x => { -in => [ 1, undef ] } },
     stmt => " WHERE ( x IN ( ? ) OR x IS NULL )",
     bind => [ 1 ],
-    test => '-in with undef as an element', 
+    test => '-in with undef as an element',
   },
   {
-    exception => qr/
+    throws => qr/
       \QSQL::Abstract before v1.75 used to generate incorrect SQL \E
       \Qwhen the -IN operator was given an undef-containing list: \E
       \Q!!!AUDIT YOUR CODE AND DATA!!! (the upcoming Data::Query-based \E
@@ -205,29 +225,24 @@ for my $case (@in_between_tests) {
     local $TODO = $case->{todo} if $case->{todo};
     local $SQL::Abstract::Test::parenthesis_significant = $case->{parenthesis_significant};
 
-    local $Data::Dumper::Terse = 1;
-
-    my @w;
-    local $SIG{__WARN__} = sub { push @w, @_ };
     my $sql = SQL::Abstract->new ($case->{args} || {});
 
-    if ($case->{exception}) {
-      throws_ok { $sql->where($case->{where}) } $case->{exception};
+    if (my $e = $case->{throws}) {
+      throws_ok { $sql->where($case->{where}) } $e;
     }
     else {
-      lives_ok {
-        my ($stmt, @bind) = $sql->where($case->{where});
-        is_same_sql_bind(
-          $stmt,
-          \@bind,
-          $case->{stmt},
-          $case->{bind},
-        ) || diag "Search term:\n" . Dumper $case->{where};
-      } "$case->{test} doesn't die";
-    }
+      my ($stmt, @bind);
+      warnings_are {
+        ($stmt, @bind) = $sql->where($case->{where});
+      } [], 'No warnings within in-between tests';
 
-    is (@w, 0, $case->{test} || 'No warnings within in-between tests')
-      || diag join "\n", 'Emitted warnings:', @w;
+      is_same_sql_bind(
+        $stmt,
+        \@bind,
+        $case->{stmt},
+        $case->{bind},
+      ) || diag_where ( $case->{where} );
+    }
   }
 }
 

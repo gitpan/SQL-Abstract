@@ -1,10 +1,5 @@
 package SQL::Abstract; # see doc at end of file
 
-# LDNOTE : this code is heavy refactoring from original SQLA.
-# Several design decisions will need discussion during
-# the test / diffusion / acceptance phase; those are marked with flag
-# 'LDNOTE' (note by laurent.dami AT free.fr)
-
 use strict;
 use warnings;
 use Carp ();
@@ -15,7 +10,7 @@ use Scalar::Util ();
 # GLOBALS
 #======================================================================
 
-our $VERSION  = '1.74_01';
+our $VERSION  = '1.74_02';
 
 # This would confuse some packagers
 $VERSION = eval $VERSION if $VERSION =~ /_/; # numify for warning-free dev releases
@@ -29,6 +24,7 @@ my @BUILTIN_SPECIAL_OPS = (
   {regex => qr/^ (?: not \s )? in      $/ix, handler => '_where_field_IN'},
   {regex => qr/^ ident                 $/ix, handler => '_where_op_IDENT'},
   {regex => qr/^ value                 $/ix, handler => '_where_op_VALUE'},
+  {regex => qr/^ is (?: \s+ not )?     $/ix, handler => '_where_field_IS'},
 );
 
 # unaryish operators - key maps to handler
@@ -39,7 +35,7 @@ my @BUILTIN_UNARY_OPS = (
   { regex => qr/^ nest (?: [_\s]? \d+ )? $/xi, handler => '_where_op_NEST' },
   { regex => qr/^ (?: not \s )? bool     $/xi, handler => '_where_op_BOOL' },
   { regex => qr/^ ident                  $/xi, handler => '_where_op_IDENT' },
-  { regex => qr/^ value                  $/ix, handler => '_where_op_VALUE' },
+  { regex => qr/^ value                  $/xi, handler => '_where_op_VALUE' },
 );
 
 #======================================================================
@@ -79,17 +75,18 @@ sub new {
   $opt{logic} = $opt{logic} ? uc $opt{logic} : 'OR';
 
   # how to return bind vars
-  # LDNOTE: changed nwiger code : why this 'delete' ??
-  # $opt{bindtype} ||= delete($opt{bind_type}) || 'normal';
   $opt{bindtype} ||= 'normal';
 
   # default comparison is "=", but can be overridden
   $opt{cmp} ||= '=';
 
   # try to recognize which are the 'equality' and 'inequality' ops
-  # (temporary quickfix, should go through a more seasoned API)
-  $opt{equality_op}   = qr/^(\Q$opt{cmp}\E|is|(is\s+)?like)$/i;
-  $opt{inequality_op} = qr/^(!=|<>|(is\s+)?not(\s+like)?)$/i;
+  # (temporary quickfix (in 2007), should go through a more seasoned API)
+  $opt{equality_op}   = qr/^( \Q$opt{cmp}\E | \= )$/ix;
+  $opt{inequality_op} = qr/^( != | <> )$/ix;
+
+  $opt{like_op}       = qr/^ (is\s+)? r?like $/xi;
+  $opt{not_like_op}   = qr/^ (is\s+)? not \s+ r?like $/xi;
 
   # SQL booleans
   $opt{sqltrue}  ||= '1=1';
@@ -457,11 +454,6 @@ sub _where_ARRAYREF {
       },
 
       HASHREF   => sub {$self->_recurse_where($el, 'and') if %$el},
-           # LDNOTE : previous SQLA code for hashrefs was creating a dirty
-           # side-effect: the first hashref within an array would change
-           # the global logic to 'AND'. So [ {cond1, cond2}, [cond3, cond4] ]
-           # was interpreted as "(cond1 AND cond2) OR (cond3 AND cond4)",
-           # whereas it should be "(cond1 AND cond2) OR (cond3 OR cond4)".
 
       SCALARREF => sub { ($$el);                                 },
 
@@ -741,7 +733,6 @@ sub _where_hashpair_ARRAYREF {
     return $self->_recurse_where(\@distributed, $logic);
   }
   else {
-    # LDNOTE : not sure of this one. What does "distribute over nothing" mean?
     $self->_debug("empty ARRAY($k) means 0=1");
     return ($self->{sqlfalse});
   }
@@ -767,6 +758,9 @@ sub _where_hashpair_HASHREF {
     $op =~ s/\s+/ /g;     # compress whitespace
 
     $self->_assert_pass_injection_guard($op);
+
+    # fixup is_not
+    $op =~ s/^is_not/IS NOT/i;
 
     # so that -not_foo works correctly
     $op =~ s/^not_/NOT /i;
@@ -810,9 +804,13 @@ sub _where_hashpair_HASHREF {
         },
 
         UNDEF => sub {          # CASE: col => {op => undef} : sql "IS (NOT)? NULL"
-          my $is = ($op =~ $self->{equality_op})   ? 'is'     :
-                   ($op =~ $self->{inequality_op}) ? 'is not' :
-               puke "unexpected operator '$orig_op' with undef operand";
+          my $is =
+            $op =~ $self->{equality_op}   ? 'is'
+          : $op =~ $self->{like_op}       ? belch("Supplying an undefined argument to '@{[ uc $op]}' is deprecated") && 'is'
+          : $op =~ $self->{inequality_op} ? 'is not'
+          : $op =~ $self->{not_like_op}   ? belch("Supplying an undefined argument to '@{[ uc $op]}' is deprecated") && 'is not'
+          : puke "unexpected operator '$orig_op' with undef operand";
+
           $sql = $self->_quote($k) . $self->_sqlcase(" $is null");
         },
 
@@ -837,7 +835,22 @@ sub _where_hashpair_HASHREF {
   return ($all_sql, @all_bind);
 }
 
+sub _where_field_IS {
+  my ($self, $k, $op, $v) = @_;
 
+  my ($s) = $self->_SWITCH_refkind($v, {
+    UNDEF => sub {
+      join ' ',
+        $self->_convert($self->_quote($k)),
+        map { $self->_sqlcase($_)} ($op, 'null')
+    },
+    FALLBACK => sub {
+      puke "$op can only take undef as argument";
+    },
+  });
+
+  $s;
+}
 
 sub _where_field_op_ARRAYREF {
   my ($self, $k, $op, $vals) = @_;
@@ -857,27 +870,35 @@ sub _where_field_op_ARRAYREF {
       shift @vals;
     }
 
+    # a long standing API wart - an attempt to change this behavior during
+    # the 1.50 series failed *spectacularly*. Warn instead and leave the
+    # behavior as is
+    if (
+      @vals > 1
+        and
+      (!$logic or $logic eq 'OR')
+        and
+      ( $op =~ $self->{inequality_op} or $op =~ $self->{not_like_op} )
+    ) {
+      my $o = uc($op);
+      belch "A multi-element arrayref as an argument to the inequality op '$o' "
+          . 'is technically equivalent to an always-true 1=1 (you probably wanted '
+          . "to say ...{ \$inequality_op => [ -and => \@values ] }... instead)"
+      ;
+    }
+
     # distribute $op over each remaining member of @vals, append logic if exists
     return $self->_recurse_where([map { {$k => {$op, $_}} } @vals], $logic);
-
-    # LDNOTE : had planned to change the distribution logic when
-    # $op =~ $self->{inequality_op}, because of Morgan laws :
-    # with {field => {'!=' => [22, 33]}}, it would be ridiculous to generate
-    # WHERE field != 22 OR  field != 33 : the user probably means
-    # WHERE field != 22 AND field != 33.
-    # To do this, replace the above to roughly :
-    # my $logic = ($op =~ $self->{inequality_op}) ? 'AND' : 'OR';
-    # return $self->_recurse_where([map { {$k => {$op, $_}} } @vals], $logic);
 
   }
   else {
     # try to DWIM on equality operators
-    # LDNOTE : not 100% sure this is the correct thing to do ...
-    return ($self->{sqlfalse}) if $op =~ $self->{equality_op};
-    return ($self->{sqltrue})  if $op =~ $self->{inequality_op};
-
-    # otherwise
-    puke "operator '$op' applied on an empty array (field '$k')";
+    return
+      $op =~ $self->{equality_op}   ? $self->{sqlfalse}
+    : $op =~ $self->{like_op}       ? belch("Supplying an empty arrayref to '@{[ uc $op]}' is deprecated") && $self->{sqlfalse}
+    : $op =~ $self->{inequality_op} ? $self->{sqltrue}
+    : $op =~ $self->{not_like_op}   ? belch("Supplying an empty arrayref to '@{[ uc $op]}' is deprecated") && $self->{sqltrue}
+    : puke "operator '$op' applied on an empty array (field '$k')";
   }
 }
 
@@ -961,6 +982,8 @@ sub _where_field_BETWEEN {
   $placeholder = $self->_convert('?');
   $op               = $self->_sqlcase($op);
 
+  my $invalid_args = "Operator '$op' requires either an arrayref with two defined values or expressions, or a single literal scalarref/arrayref-ref";
+
   my ($clause, @bind) = $self->_SWITCH_refkind($vals, {
     ARRAYREFREF => sub {
       my ($s, @b) = @$$vals;
@@ -971,8 +994,7 @@ sub _where_field_BETWEEN {
       return $$vals;
     },
     ARRAYREF => sub {
-      puke "special op 'between' accepts an arrayref with exactly two values"
-        if @$vals != 2;
+      puke $invalid_args if @$vals != 2;
 
       my (@all_sql, @all_bind);
       foreach my $val (@$vals) {
@@ -994,7 +1016,10 @@ sub _where_field_BETWEEN {
                if (@rest or $func !~ /^ \- (.+)/x);
              local $self->{_nested_func_lhs} = $k;
              $self->_where_unary_op ($1 => $arg);
-           }
+           },
+           FALLBACK => sub {
+             puke $invalid_args,
+           },
         });
         push @all_sql, $sql;
         push @all_bind, @bind;
@@ -1006,7 +1031,7 @@ sub _where_field_BETWEEN {
       );
     },
     FALLBACK => sub {
-      puke "special op 'between' accepts an arrayref with two values, or a single literal scalarref/arrayref-ref";
+      puke $invalid_args,
     },
   });
 
@@ -1248,16 +1273,6 @@ sub _quote {
 # Conversion, if applicable
 sub _convert ($) {
   #my ($self, $arg) = @_;
-
-# LDNOTE : modified the previous implementation below because
-# it was not consistent : the first "return" is always an array,
-# the second "return" is context-dependent. Anyway, _convert
-# seems always used with just a single argument, so make it a
-# scalar function.
-#     return @_ unless $self->{convert};
-#     my $conv = $self->_sqlcase($self->{convert});
-#     my @ret = map { $conv.'('.$_.')' } @_;
-#     return wantarray ? @ret : $ret[0];
   if ($_[0]->{convert}) {
     return $_[0]->_sqlcase($_[0]->{convert}) .'(' . $_[1] . ')';
   }
@@ -1267,11 +1282,6 @@ sub _convert ($) {
 # And bindtype
 sub _bindtype (@) {
   #my ($self, $col, @vals) = @_;
-
-  #LDNOTE : changed original implementation below because it did not make
-  # sense when bindtype eq 'columns' and @vals > 1.
-#  return $self->{bindtype} eq 'columns' ? [ $col, @vals ] : @vals;
-
   # called often - tighten code
   return $_[0]->{bindtype} eq 'columns'
     ? map {[$_[1], $_]} @_[2 .. $#_]
@@ -2306,15 +2316,19 @@ then you should use the and/or operators:-
     my %where  = (
         -and           => [
             -bool      => 'one',
-            -bool      => 'two',
-            -bool      => 'three',
-            -not_bool  => 'four',
+            -not_bool  => { two=> { -rlike => 'bar' } },
+            -not_bool  => { three => [ { '=', 2 }, { '>', 5 } ] },
         ],
     );
 
 Would give you:
 
-    WHERE one AND two AND three AND NOT four
+    WHERE
+      one
+        AND
+      (NOT two RLIKE ?)
+        AND
+      (NOT ( three = ? OR three > ? ))
 
 
 =head2 Nested conditions, -and/-or prefixes
@@ -2836,6 +2850,9 @@ really like this part (I do, at least). Building up a complex query
 can be as simple as the following:
 
     #!/usr/bin/perl
+
+    use warnings;
+    use strict;
 
     use CGI::FormBuilder;
     use SQL::Abstract;

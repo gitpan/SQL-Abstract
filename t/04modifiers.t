@@ -1,15 +1,12 @@
-#!/usr/bin/perl
-
 use strict;
 use warnings;
 use Test::More;
 use Test::Exception;
-use SQL::Abstract::Test import => ['is_same_sql_bind'];
+use Test::Warn;
+use SQL::Abstract::Test import => [qw(is_same_sql_bind diag_where)];
 
-use Data::Dumper;
 use SQL::Abstract;
-
-my $dclone = eval { require Storable; \&Storable::dclone };
+use Storable 'dclone';
 
 #### WARNING ####
 #
@@ -26,7 +23,7 @@ Test -and -or and -nest modifiers, assuming the following:
     limitation of one modifier type per hahsref)
   * When in condition context i.e. where => { -or { a = 1 } }, each modifier
     affects only the immediate element following it.
-  * When in column multi-condition context i.e. 
+  * When in column multi-condition context i.e.
     where => { x => { '!=', [-and, [qw/1 2 3/]] } }, a modifier affects the
     OUTER ARRAYREF if and only if it is the first element of said ARRAYREF
 
@@ -77,7 +74,7 @@ my @and_or_tests = (
     %{$and_or_args->{or}},
   },
 
-  # test modifiers within hashrefs 
+  # test modifiers within hashrefs
   {
     where => { -or => [
       [ foo => 1, bar => 2 ],
@@ -93,7 +90,7 @@ my @and_or_tests = (
     %{$and_or_args->{or_and}},
   },
 
-  # test modifiers within arrayrefs 
+  # test modifiers within arrayrefs
   {
     where => [ -or => [
       [ foo => 1, bar => 2 ],
@@ -171,8 +168,8 @@ my @and_or_tests = (
 
   # the -and should affect the OUTER arrayref, while the internal structures remain intact
   {
-    where => { x => [ 
-      -and => [ 1, 2 ], { -like => 'x%' } 
+    where => { x => [
+      -and => [ 1, 2 ], { -like => 'x%' }
     ]},
     stmt => 'WHERE (x = ? OR x = ?) AND x LIKE ?',
     bind => [qw/1 2 x%/],
@@ -218,7 +215,7 @@ my @and_or_tests = (
     bind => [1 .. 13],
   },
 
-  # 1st -and is in column mode, thus flips the entire array, whereas the 
+  # 1st -and is in column mode, thus flips the entire array, whereas the
   # 2nd one is just a condition modifier
   {
     where => [
@@ -385,31 +382,21 @@ for my $case (@and_or_tests) {
   TODO: {
     local $TODO = $case->{todo} if $case->{todo};
 
-    local $Data::Dumper::Terse = 1;
-
-    my @w;
-    local $SIG{__WARN__} = sub { push @w, @_ };
-
     my $sql = SQL::Abstract->new ($case->{args} || {});
 
-    my $where_copy = $dclone->($case->{where})
-      if $dclone;;
+    my $where_copy = dclone($case->{where});
 
-    lives_ok (sub { 
+    warnings_are {
       my ($stmt, @bind) = $sql->where($case->{where});
       is_same_sql_bind(
         $stmt,
         \@bind,
         $case->{stmt},
         $case->{bind},
-      )
-        || diag "Search term:\n" . Dumper $case->{where};
-    });
-    is (@w, 0, 'No warnings within and-or tests')
-      || diag join "\n", 'Emitted warnings:', @w;
+      ) || diag_where( $case->{where} );
+    } [], 'No warnings within and-or tests';
 
-    is_deeply ($case->{where}, $where_copy, 'Where conditions unchanged')
-      if $dclone;
+    is_deeply ($case->{where}, $where_copy, 'Where conditions unchanged');
   }
 }
 
@@ -418,7 +405,6 @@ for my $case (@nest_tests) {
     local $TODO = $case->{todo} if $case->{todo};
 
     local $SQL::Abstract::Test::parenthesis_significant = 1;
-    local $Data::Dumper::Terse = 1;
 
     my $sql = SQL::Abstract->new ($case->{args} || {});
     lives_ok (sub {
@@ -428,46 +414,37 @@ for my $case (@nest_tests) {
         \@bind,
         $case->{stmt},
         $case->{bind},
-      )
-        || diag "Search term:\n" . Dumper $case->{where};
+      ) || diag_where ( $case->{where} );
     });
   }
 }
 
-
-
-my $w_str = "\QUse of [and|or|nest]_N modifiers is deprecated and will be removed in SQLA v2.0\E";
 for my $case (@numbered_mods) {
   TODO: {
     local $TODO = $case->{todo} if $case->{todo};
 
-    local $Data::Dumper::Terse = 1;
-
+    # not using Test::Warn here - variable amount of warnings
     my @w;
     local $SIG{__WARN__} = sub { push @w, @_ };
+
     my $sql = SQL::Abstract->new ($case->{args} || {});
-    lives_ok (sub {
+    {
       my ($old_s, @old_b) = $sql->where($case->{backcompat});
       my ($new_s, @new_b) = $sql->where($case->{correct});
       is_same_sql_bind(
         $old_s, \@old_b,
         $new_s, \@new_b,
         'Backcompat and the correct(tm) syntax result in identical statements',
-      ) || diag "Search terms:\n" . Dumper {
-          backcompat => $case->{backcompat},
-          correct => $case->{correct},
-        };
-    });
+      ) || diag_where ( {
+        backcompat => $case->{backcompat},
+        correct => $case->{correct},
+      });
+    };
 
-    ok (@w, 'Warnings were emitted about a mod_N construct');
-
-    my @non_match;
-    for (@w) {
-      push @non_match, $_ if ($_ !~ /$w_str/);
-    }
-
-    is (@non_match, 0, 'All warnings match the deprecation message')
-      || diag join "\n", 'Rogue warnings:', @non_match;
+    ok ( (grep
+      { $_ =~ qr/\QUse of [and|or|nest]_N modifiers is deprecated and will be removed in SQLA v2.0/ }
+      @w
+    ), 'Warnings were emitted about a mod_N construct');
   }
 }
 

@@ -1,5 +1,3 @@
-#!/usr/bin/perl
-
 use strict;
 use warnings;
 use Test::More;
@@ -91,7 +89,7 @@ for my $record (@data) {
 {
   my $sql = SQL::Abstract->new;
 
-  my $data = { 
+  my $data = {
     event => 'rapture',
     stuff => 'fluff',
     time => \ 'now()',
