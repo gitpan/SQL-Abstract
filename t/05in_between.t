@@ -127,6 +127,18 @@ my @in_between_tests = (
     ],
     test => '-between POD test',
   },
+  {
+    where => { 'test1.a' => { 'In', ['boom', 'bang'] } },
+    stmt => ' WHERE ( test1.a IN ( ?, ? ) )',
+    bind => ['boom', 'bang'],
+    test => 'In (no dash, initial cap) with qualified column',
+  },
+  {
+    where => { a => { 'between', ['boom', 'bang'] } },
+    stmt => ' WHERE ( a BETWEEN ? AND ? )',
+    bind => ['boom', 'bang'],
+    test => 'between (no dash) with two placeholders',
+  },
 
   {
     parenthesis_significant => 1,
@@ -218,29 +230,74 @@ my @in_between_tests = (
     bind => [ 1, 2, 3 ],
     test => '-in with multiple undef elements',
   },
+  {
+    where => { a => { -in => 42 }, b => { -not_in => 42 } },
+    stmt => ' WHERE a IN ( ? ) AND b NOT IN ( ? )',
+    bind => [ 42, 42 ],
+    test => '-in, -not_in with scalar',
+  },
+  {
+    where => { a => { -in => [] }, b => { -not_in => [] } },
+    stmt => ' WHERE ( 0=1 AND 1=1 )',
+    bind => [],
+    test => '-in, -not_in with empty arrays',
+  },
+  {
+    throws => qr/
+      \QSQL::Abstract before v1.75 used to generate incorrect SQL \E
+      \Qwhen the -IN operator was given an undef-containing list: \E
+      \Q!!!AUDIT YOUR CODE AND DATA!!! (the upcoming Data::Query-based \E
+      \Qversion of SQL::Abstract will emit the logically correct SQL \E
+      \Qinstead of raising this exception)\E
+    /x,
+    where => { a => { -in => [42, undef] }, b => { -not_in => [42, undef] } },
+    stmt => ' WHERE ( ( a IN ( ? ) OR a IS NULL ) AND b NOT IN ( ? ) AND b IS NOT NULL )',
+    bind => [ 42, 42 ],
+    test => '-in, -not_in with undef among elements',
+  },
+  {
+    throws => qr/
+      \QSQL::Abstract before v1.75 used to generate incorrect SQL \E
+      \Qwhen the -IN operator was given an undef-containing list: \E
+      \Q!!!AUDIT YOUR CODE AND DATA!!! (the upcoming Data::Query-based \E
+      \Qversion of SQL::Abstract will emit the logically correct SQL \E
+      \Qinstead of raising this exception)\E
+    /x,
+    where => { a => { -in => [undef] }, b => { -not_in => [undef] } },
+    stmt => ' WHERE ( a IS NULL AND b IS NOT NULL )',
+    bind => [],
+    test => '-in, -not_in with just undef element',
+  },
+  {
+    where => { a => { -in => undef } },
+    throws => qr/Argument passed to the 'IN' operator can not be undefined/,
+    test => '-in with undef argument',
+  },
 );
 
 for my $case (@in_between_tests) {
   TODO: {
     local $TODO = $case->{todo} if $case->{todo};
     local $SQL::Abstract::Test::parenthesis_significant = $case->{parenthesis_significant};
+    my $label = $case->{test} || 'in-between test';
 
     my $sql = SQL::Abstract->new ($case->{args} || {});
 
     if (my $e = $case->{throws}) {
-      throws_ok { $sql->where($case->{where}) } $e;
+      throws_ok { $sql->where($case->{where}) } $e, "$label throws correctly";
     }
     else {
       my ($stmt, @bind);
       warnings_are {
         ($stmt, @bind) = $sql->where($case->{where});
-      } [], 'No warnings within in-between tests';
+      } [], "$label gives no warnings";
 
       is_same_sql_bind(
         $stmt,
         \@bind,
         $case->{stmt},
         $case->{bind},
+        "$label generates correct SQL and bind",
       ) || diag_where ( $case->{where} );
     }
   }
