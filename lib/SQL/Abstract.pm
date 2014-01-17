@@ -10,7 +10,7 @@ use Scalar::Util ();
 # GLOBALS
 #======================================================================
 
-our $VERSION  = '1.75';
+our $VERSION  = '1.75_01';
 
 # This would confuse some packagers
 $VERSION = eval $VERSION if $VERSION =~ /_/; # numify for warning-free dev releases
@@ -805,7 +805,8 @@ sub _where_hashpair_HASHREF {
 
         UNDEF => sub {          # CASE: col => {op => undef} : sql "IS (NOT)? NULL"
           my $is =
-            $op =~ $self->{equality_op}   ? 'is'
+            $op =~ /^not$/i               ? 'is not'  # legacy
+          : $op =~ $self->{equality_op}   ? 'is'
           : $op =~ $self->{like_op}       ? belch("Supplying an undefined argument to '@{[ uc $op]}' is deprecated") && 'is'
           : $op =~ $self->{inequality_op} ? 'is not'
           : $op =~ $self->{not_like_op}   ? belch("Supplying an undefined argument to '@{[ uc $op]}' is deprecated") && 'is not'

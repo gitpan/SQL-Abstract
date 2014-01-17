@@ -3,7 +3,7 @@ use warnings;
 use Test::More;
 use Test::Warn;
 use Test::Exception;
-use SQL::Abstract::Test import => [qw(is_same_sql_bind diag_where)];
+use SQL::Abstract::Test import => [qw(is_same_sql_bind diag_where dumper)];
 
 use SQL::Abstract;
 
@@ -141,46 +141,40 @@ my @in_between_tests = (
   },
 
   {
-    parenthesis_significant => 1,
     where => { x => { -in => [ 1 .. 3] } },
-    stmt => "WHERE ( x IN (?, ?, ?) )",
-    bind => [ 1 .. 3],
+    stmt => "WHERE x IN (?, ?, ?)",
+    bind => [ 1 .. 3 ],
     test => '-in with an array of scalars',
   },
   {
-    parenthesis_significant => 1,
     where => { x => { -in => [] } },
-    stmt => "WHERE ( 0=1 )",
+    stmt => "WHERE 0=1",
     bind => [],
     test => '-in with an empty array',
   },
   {
-    parenthesis_significant => 1,
     where => { x => { -in => \'( 1,2,lower(y) )' } },
-    stmt => "WHERE ( x IN ( 1,2,lower(y) ) )",
+    stmt => "WHERE x IN ( 1,2,lower(y) )",
     bind => [],
     test => '-in with a literal scalarref',
   },
 
   # note that outer parens are opened even though literal was requested below
   {
-    parenthesis_significant => 1,
     where => { x => { -in => \['( ( ?,?,lower(y) ) )', 1, 2] } },
-    stmt => "WHERE ( x IN ( ?,?,lower(y) ) )",
+    stmt => "WHERE x IN ( ?,?,lower(y) )",
     bind => [1, 2],
     test => '-in with a literal arrayrefref',
   },
   {
-    parenthesis_significant => 1,
     where => {
       status => { -in => \"(SELECT status_codes\nFROM states)" },
     },
-    stmt => " WHERE ( status IN ( SELECT status_codes FROM states )) ",
+    stmt => " WHERE status IN ( SELECT status_codes FROM states )",
     bind => [],
     test => '-in multi-line subquery test',
   },
   {
-    parenthesis_significant => 1,
     where => {
       customer => { -in => \[
         'SELECT cust_id FROM cust WHERE balance > ?',
@@ -189,10 +183,9 @@ my @in_between_tests = (
       status => { -in => \'SELECT status_codes FROM states' },
     },
     stmt => "
-      WHERE ((
+      WHERE
             customer IN ( SELECT cust_id FROM cust WHERE balance > ? )
         AND status IN ( SELECT status_codes FROM states )
-      ))
     ",
     bind => [2000],
     test => '-in POD test',
@@ -284,7 +277,9 @@ for my $case (@in_between_tests) {
     my $sql = SQL::Abstract->new ($case->{args} || {});
 
     if (my $e = $case->{throws}) {
-      throws_ok { $sql->where($case->{where}) } $e, "$label throws correctly";
+      my $stmt;
+      throws_ok { ($stmt) = $sql->where($case->{where}) } $e, "$label throws correctly"
+        or diag dumper ({ where => $case->{where}, result => $stmt });
     }
     else {
       my ($stmt, @bind);
