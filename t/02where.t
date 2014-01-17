@@ -333,7 +333,7 @@ my @handle_tests = (
    },
    {
        where => { timestamp => { '>=' => { -to_date => '2009-12-21 00:00:00' } } },
-       stmt => " WHERE ( timestamp >= TO_DATE ? )",
+       stmt => " WHERE ( timestamp >= TO_DATE(?) )",
        bind => ['2009-12-21 00:00:00'],
    },
 

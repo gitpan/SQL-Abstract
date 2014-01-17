@@ -305,10 +305,9 @@ my @and_or_tests = (
   },
 );
 
-# modN and mod_N were a bad design decision - they go away in SQLA2, warn now
-my @numbered_mods = (
-  {
-    backcompat => {
+# modN and mod_N were a bad design decision - they went away
+my @invalid_numbered_mods = (
+    {
       -and => [a => 10, b => 11],
       -and2 => [ c => 20, d => 21 ],
       -nest => [ x => 1 ],
@@ -316,17 +315,7 @@ my @numbered_mods = (
       -or => { m => 7, n => 8 },
       -or2 => { m => 17, n => 18 },
     },
-    correct => { -and => [
-      -and => [a => 10, b => 11],
-      -and => [ c => 20, d => 21 ],
-      -nest => [ x => 1 ],
-      -nest => [ y => 2 ],
-      -or => { m => 7, n => 8 },
-      -or => { m => 17, n => 18 },
-    ] },
-  },
-  {
-    backcompat => {
+    {
       -and2 => [a => 10, b => 11],
       -and_3 => [ c => 20, d => 21 ],
       -nest2 => [ x => 1 ],
@@ -334,15 +323,6 @@ my @numbered_mods = (
       -or2 => { m => 7, n => 8 },
       -or_3 => { m => 17, n => 18 },
     },
-    correct => [ -and => [
-      -and => [a => 10, b => 11],
-      -and => [ c => 20, d => 21 ],
-      -nest => [ x => 1 ],
-      -nest => [ y => 2 ],
-      -or => { m => 7, n => 8 },
-      -or => { m => 17, n => 18 },
-    ] ],
-  },
 );
 
 my @nest_tests = (
@@ -353,12 +333,12 @@ my @nest_tests = (
  },
  {
    where => {a => 1, -nest => {b => 2, c => 3}},
-   stmt  => 'WHERE ( ( (b = ? AND c = ?) AND a = ? ) )',
+   stmt  => 'WHERE ( ( b = ? AND c = ? AND a = ? ) )',
    bind  => [qw/2 3 1/],
  },
  {
    where => {a => 1, -or => {-nest => {b => 2, c => 3}}},
-   stmt  => 'WHERE ( ( (b = ? AND c = ?) AND a = ? ) )',
+   stmt  => 'WHERE ( ( b = ? AND c = ? AND a = ? ) )',
    bind  => [qw/2 3 1/],
  },
  {
@@ -373,8 +353,32 @@ my @nest_tests = (
  },
  {
    where => [a => 1, -nest => {b => 2, c => 3}, -nest => [d => 4, e => 5]],
-   stmt  => 'WHERE ( ( a = ? OR ( b = ? AND c = ? ) OR ( d = ? OR e = ? ) ) )',
+   stmt  => 'WHERE ( ( a = ? OR ( b = ? AND c = ? ) OR d = ? OR e = ? ) )',
    bind  => [qw/1 2 3 4 5/],
+ },
+ {
+   where => { -and => [
+    -and => [a => 10, b => 11],
+    -and => [ c => 20, d => 21 ],
+    -nest => [ x => 1 ],
+    -nest => [ y => 2 ],
+    -or => { m => 7, n => 8 },
+    -or => { m => 17, n => 18 },
+   ] },
+   stmt => 'WHERE ( ( a = ? AND b = ? AND c = ? AND d = ? AND ( x = ? ) AND ( y = ? ) AND ( m = ? OR n = ? ) AND ( m = ? OR n = ? ) ) )',
+   bind => [ 10, 11, 20, 21, 1, 2, 7, 8, 17, 18 ],
+ },
+ {
+   where => [ -and => [
+    -and => [a => 10, b => 11],
+    -and => [ c => 20, d => 21 ],
+    -nest => [ x => 1 ],
+    -nest => [ y => 2 ],
+    -or => { m => 7, n => 8 },
+    -or => { m => 17, n => 18 },
+   ] ],
+   stmt => 'WHERE ( ( ( a = ? AND b = ? AND c = ? AND d = ? AND ( x = ? ) AND ( y = ? ) AND ( m = ? OR n = ? ) AND ( m = ? OR n = ? ) ) ) )',
+   bind => [ 10, 11, 20, 21, 1, 2, 7, 8, 17, 18 ],
  },
 );
 
@@ -419,33 +423,11 @@ for my $case (@nest_tests) {
   }
 }
 
-for my $case (@numbered_mods) {
-  TODO: {
-    local $TODO = $case->{todo} if $case->{todo};
-
-    # not using Test::Warn here - variable amount of warnings
-    my @w;
-    local $SIG{__WARN__} = sub { push @w, @_ };
-
+for my $case (@invalid_numbered_mods) {
     my $sql = SQL::Abstract->new ($case->{args} || {});
-    {
-      my ($old_s, @old_b) = $sql->where($case->{backcompat});
-      my ($new_s, @new_b) = $sql->where($case->{correct});
-      is_same_sql_bind(
-        $old_s, \@old_b,
-        $new_s, \@new_b,
-        'Backcompat and the correct(tm) syntax result in identical statements',
-      ) || diag_where ( {
-        backcompat => $case->{backcompat},
-        correct => $case->{correct},
-      });
-    };
-
-    ok ( (grep
-      { $_ =~ qr/\QUse of [and|or|nest]_N modifiers is deprecated and will be removed in SQLA v2.0/ }
-      @w
-    ), 'Warnings were emitted about a mod_N construct');
-  }
+    throws_ok (sub {
+      $sql->where($case);
+    }, qr/\QUse of [and|or|nest]_N modifiers is no longer supported/, 'Exception thrown on bogus syntax');
 }
 
 done_testing;
