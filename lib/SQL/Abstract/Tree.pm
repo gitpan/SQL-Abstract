@@ -1,45 +1,22 @@
 package SQL::Abstract::Tree;
 
-use SQL::Abstract::_TempExtlib;
+# DO NOT edit away without talking to riba first, he will just put it back
+# BEGIN pre-Moo2 import block
+BEGIN {
+  require warnings;
+  my $initial_fatal_bits = (${^WARNING_BITS}||'') & $warnings::DeadBits{all};
+  local $ENV{PERL_STRICTURES_EXTRA} = 0;
+  require Moo; Moo->import;
+  require Sub::Quote; Sub::Quote->import('quote_sub');
+  ${^WARNING_BITS} &= ( $initial_fatal_bits | ~ $warnings::DeadBits{all} );
+}
+# END pre-Moo2 import block
 
-use Carp;
-use Hash::Merge ();
-
-use Sub::Quote 'quote_sub';
-use Moo;
+use strict;
+use warnings;
 no warnings 'qw';
 
-has [qw(
-  newline indent_string indent_amount fill_in_placeholders
-)] => ( is => 'rw' );
-
-has [qw(
-  colormap indentmap
-)] => ( is => 'rw', default => quote_sub('{}') );
-
-has [qw(
-  placeholder_surround
-)] => ( is => 'rw', default => quote_sub('[]') );
-
-my $merger = Hash::Merge->new;
-
-$merger->specify_behavior({
-   SCALAR => {
-      SCALAR => sub { $_[1] },
-      ARRAY  => sub { [ $_[0], @{$_[1]} ] },
-      HASH   => sub { $_[1] },
-   },
-   ARRAY => {
-      SCALAR => sub { $_[1] },
-      ARRAY  => sub { $_[1] },
-      HASH   => sub { $_[1] },
-   },
-   HASH => {
-      SCALAR => sub { $_[1] },
-      ARRAY  => sub { [ values %{$_[0]}, @{$_[1]} ] },
-      HASH   => sub { Hash::Merge::_merge_hashes( $_[0], $_[1] ) },
-   },
-}, 'SQLA::Tree Behavior' );
+use Carp;
 
 my $op_look_ahead = '(?: (?= [\s\)\(\;] ) | \z)';
 my $op_look_behind = '(?: (?<= [\,\s\)\(] ) | \A )';
@@ -90,7 +67,6 @@ my @expression_start_keywords = (
   'SAVEPOINT',
   'RELEASE \s+ SAVEPOINT',
   'RETURNING',
-  'ROW_NUMBER \s* \( \s* \) \s+ OVER',
 );
 
 my $expr_start_re = join ("\n\t|\n", @expression_start_keywords );
@@ -122,7 +98,9 @@ $binary_op_re = join "\n\t|\n",
 ;
 $binary_op_re = qr/$binary_op_re/x;
 
-my $unary_op_re = '(?: NOT \s+ EXISTS | NOT )';
+my $rno_re = qr/ROW_NUMBER \s* \( \s* \) \s+ OVER/ix;
+
+my $unary_op_re = 'NOT \s+ EXISTS | NOT | ' . $rno_re;
 $unary_op_re = join "\n\t|\n",
   "$op_look_behind (?i: $unary_op_re ) $op_look_ahead",
 ;
@@ -202,18 +180,33 @@ my %indents = (
    first         => 1,
 );
 
-my %profiles = (
-   console => {
-      fill_in_placeholders => 1,
-      placeholder_surround => ['?/', ''],
-      indent_string => ' ',
-      indent_amount => 2,
-      newline       => "\n",
-      colormap      => {},
-      indentmap     => \%indents,
 
-      eval { require Term::ANSIColor }
-        ? do {
+has [qw(
+  newline indent_string indent_amount fill_in_placeholders placeholder_surround
+)] => (is => 'ro');
+
+has [qw( indentmap colormap )] => ( is => 'ro', default => quote_sub('{}') );
+
+# class global is in fact desired
+my $merger;
+
+sub BUILDARGS {
+  my $class = shift;
+  my $args = ref $_[0] eq 'HASH' ? $_[0] : {@_};
+
+  if (my $p = delete $args->{profile}) {
+    my %extra_args;
+    if ($p eq 'console') {
+      %extra_args = (
+        fill_in_placeholders => 1,
+        placeholder_surround => ['?/', ''],
+        indent_string => ' ',
+        indent_amount => 2,
+        newline       => "\n",
+        colormap      => {},
+        indentmap     => \%indents,
+
+        ! ( eval { require Term::ANSIColor } ) ? () : do {
           my $c = \&Term::ANSIColor::color;
 
           my $red     = [$c->('red')    , $c->('reset')];
@@ -258,75 +251,85 @@ my %profiles = (
               offset                  => $green,
             }
           );
-        } : (),
-   },
-   console_monochrome => {
-      fill_in_placeholders => 1,
-      placeholder_surround => ['?/', ''],
-      indent_string => ' ',
-      indent_amount => 2,
-      newline       => "\n",
-      colormap      => {},
-      indentmap     => \%indents,
-   },
-   html => {
-      fill_in_placeholders => 1,
-      placeholder_surround => ['<span class="placeholder">', '</span>'],
-      indent_string => '&nbsp;',
-      indent_amount => 2,
-      newline       => "<br />\n",
-      colormap      => {
-         select        => ['<span class="select">'  , '</span>'],
-         'insert into' => ['<span class="insert-into">'  , '</span>'],
-         update        => ['<span class="select">'  , '</span>'],
-         'delete from' => ['<span class="delete-from">'  , '</span>'],
+        },
+      );
+    }
+    elsif ($p eq 'console_monochrome') {
+      %extra_args = (
+        fill_in_placeholders => 1,
+        placeholder_surround => ['?/', ''],
+        indent_string => ' ',
+        indent_amount => 2,
+        newline       => "\n",
+        indentmap     => \%indents,
+      );
+    }
+    elsif ($p eq 'html') {
+      %extra_args = (
+        fill_in_placeholders => 1,
+        placeholder_surround => ['<span class="placeholder">', '</span>'],
+        indent_string => '&nbsp;',
+        indent_amount => 2,
+        newline       => "<br />\n",
+        colormap      => { map {
+          (my $class = $_) =~ s/\s+/-/g;
+          ( $_ => [ qq|<span class="$class">|, '</span>' ] )
+        } (
+          keys %indents,
+          qw(commit rollback savepoint),
+          'begin work', 'rollback to savepoint', 'release savepoint',
+        ) },
+        indentmap     => \%indents,
+      );
+    }
+    elsif ($p eq 'none') {
+      # nada
+    }
+    else {
+      croak "No such profile '$p'";
+    }
 
-         set           => ['<span class="set">', '</span>'],
-         from          => ['<span class="from">'    , '</span>'],
+    # see if we got any duplicates and merge if needed
+    if (scalar grep { exists $args->{$_} } keys %extra_args) {
+      # heavy-duty merge
+      $args = ($merger ||= do {
+        require Hash::Merge;
+        my $m = Hash::Merge->new;
 
-         where         => ['<span class="where">'   , '</span>'],
-         values        => ['<span class="values">', '</span>'],
+        $m->specify_behavior({
+          SCALAR => {
+            SCALAR => sub { $_[1] },
+            ARRAY  => sub { [ $_[0], @{$_[1]} ] },
+            HASH   => sub { $_[1] },
+          },
+          ARRAY => {
+            SCALAR => sub { $_[1] },
+            ARRAY  => sub { $_[1] },
+            HASH   => sub { $_[1] },
+          },
+          HASH => {
+            SCALAR => sub { $_[1] },
+            ARRAY  => sub { [ values %{$_[0]}, @{$_[1]} ] },
+            HASH   => sub { Hash::Merge::_merge_hashes( $_[0], $_[1] ) },
+          },
+        }, 'SQLA::Tree Behavior' );
 
-         join          => ['<span class="join">'    , '</span>'],
-         'left join'   => ['<span class="left-join">','</span>'],
-         on            => ['<span class="on">'      , '</span>'],
+        $m;
+      })->merge(\%extra_args, $args );
 
-         'group by'    => ['<span class="group-by">', '</span>'],
-         having        => ['<span class="having">',   '</span>'],
-         'order by'    => ['<span class="order-by">', '</span>'],
+    }
+    else {
+      $args = { %extra_args, %$args };
+    }
+  }
 
-         skip          => ['<span class="skip">',   '</span>'],
-         first         => ['<span class="first">',  '</span>'],
-         limit         => ['<span class="limit">',  '</span>'],
-         offset        => ['<span class="offset">', '</span>'],
-
-         'begin work'  => ['<span class="begin-work">', '</span>'],
-         commit        => ['<span class="commit">', '</span>'],
-         rollback      => ['<span class="rollback">', '</span>'],
-         savepoint     => ['<span class="savepoint">', '</span>'],
-         'rollback to savepoint' => ['<span class="rollback-to-savepoint">', '</span>'],
-         'release savepoint'     => ['<span class="release-savepoint">', '</span>'],
-      },
-      indentmap     => \%indents,
-   },
-   none => {
-      colormap      => {},
-      indentmap     => {},
-   },
-);
-
-sub BUILDARGS {
-  my $class = shift;
-  my $args = { (ref $_[0] eq 'HASH') ? %{$_[0]} : @_ };
-  my $profile = delete $args->{profile} || 'none';
-
-  die "No such profile '$profile'!" unless exists $profiles{$profile};
-
-  return $merger->merge( $profiles{$profile}, $args );
+  $args;
 }
 
 sub parse {
   my ($self, $s) = @_;
+
+  return [] unless defined $s;
 
   # tokenize string, and remove all optional whitespace
   my $tokens = [];
@@ -423,12 +426,16 @@ sub _recurse_parse {
         @right = $self->_recurse_parse($tokens, PARSE_IN_EXPR);
       }
 
-      @left = [$op => [ @left, @right ]];
+      push @left, [$op => [ (@left ? pop @left : ''), @right ]];
     }
 
     # unary op keywords
     elsif ( $token =~ $unary_op_re ) {
       my $op = uc $token;
+
+      # normalize RNO explicitly
+      $op = 'ROW_NUMBER() OVER' if $op =~ /^$rno_re$/;
+
       my @right = $self->_recurse_parse ($tokens, PARSE_RHS);
 
       push @left, [ $op => \@right ];
@@ -662,25 +669,38 @@ sub _parenthesis_unroll {
         next;
       }
 
+      my $parent_op = $ast->[0];
+
       # unroll nested parenthesis
-      while ( $ast->[0] ne 'IN' and @{$child->[1]} == 1 and $child->[1][0][0] eq '-PAREN') {
+      while ( $parent_op ne 'IN' and @{$child->[1]} == 1 and $child->[1][0][0] eq '-PAREN') {
         $child = $child->[1][0];
         $changes++;
       }
 
-      # if the parent operator explicitly allows it nuke the parenthesis
-      if ( $ast->[0] =~ $unrollable_ops_re ) {
+      # set to CHILD in the case of PARENT ( CHILD )
+      # but NOT in the case of PARENT( CHILD1, CHILD2 )
+      my $single_child_op = (@{$child->[1]} == 1) ? $child->[1][0][0] : '';
+
+      my $child_op_argc = $single_child_op ? scalar @{$child->[1][0][1]} : undef;
+
+      my $single_grandchild_op
+        = ( $child_op_argc||0 == 1 and ref $child->[1][0][1][0] eq 'ARRAY' )
+            ? $child->[1][0][1][0][0]
+            : ''
+      ;
+
+      # if the parent operator explicitly allows it AND the child isn't a subselect
+      # nuke the parenthesis
+      if ($parent_op =~ $unrollable_ops_re and $single_child_op ne 'SELECT') {
         push @children, @{$child->[1]};
         $changes++;
       }
 
       # if the parenthesis are wrapped around an AND/OR matching the parent AND/OR - open the parenthesis up and merge the list
       elsif (
-        @{$child->[1]} == 1
-            and
-        ( $ast->[0] eq 'AND' or $ast->[0] eq 'OR')
-            and
-        $child->[1][0][0] eq $ast->[0]
+        $single_child_op eq $parent_op
+          and
+        ( $parent_op eq 'AND' or $parent_op eq 'OR')
       ) {
         push @children, @{$child->[1][0][1]};
         $changes++;
@@ -689,13 +709,9 @@ sub _parenthesis_unroll {
       # only *ONE* LITERAL or placeholder element
       # as an AND/OR/NOT argument
       elsif (
-        @{$child->[1]} == 1 && (
-          $child->[1][0][0] eq '-LITERAL'
-            or
-          $child->[1][0][0] eq '-PLACEHOLDER'
-        ) && (
-          $ast->[0] eq 'AND' or $ast->[0] eq 'OR' or $ast->[0] eq 'NOT'
-        )
+        ( $single_child_op eq '-LITERAL' or $single_child_op eq '-PLACEHOLDER' )
+          and
+        ( $parent_op eq 'AND' or $parent_op eq 'OR' or $parent_op eq 'NOT' )
       ) {
         push @children, @{$child->[1]};
         $changes++;
@@ -708,20 +724,18 @@ sub _parenthesis_unroll {
       # break precedence) or when the child is BETWEEN (special
       # case)
       elsif (
-        @{$child->[1]} == 1
+        ($parent_op eq 'AND' or $parent_op eq 'OR')
           and
-        ($ast->[0] eq 'AND' or $ast->[0] eq 'OR')
+        $single_child_op =~ $binary_op_re
           and
-        $child->[1][0][0] =~ $binary_op_re
+        $single_child_op ne 'BETWEEN'
           and
-        $child->[1][0][0] ne 'BETWEEN'
-          and
-        @{$child->[1][0][1]} == 2
+        $child_op_argc == 2
           and
         ! (
-          $child->[1][0][0] =~ $alphanum_cmp_op_re
+          $single_child_op =~ $alphanum_cmp_op_re
             and
-          $ast->[0] =~ $alphanum_cmp_op_re
+          $parent_op =~ $alphanum_cmp_op_re
         )
       ) {
         push @children, @{$child->[1]};
@@ -735,20 +749,20 @@ sub _parenthesis_unroll {
       # or a single non-mathop with a single LITERAL ( nonmathop foo )
       # or a single non-mathop with a single PLACEHOLDER ( nonmathop ? )
       elsif (
-        @{$child->[1]} == 1
+        $single_child_op
           and
-        @{$child->[1][0][1]} == 1
+        $parent_op =~ $alphanum_cmp_op_re
           and
-        $ast->[0] =~ $alphanum_cmp_op_re
+        $single_child_op !~ $alphanum_cmp_op_re
           and
-        $child->[1][0][0] !~ $alphanum_cmp_op_re
+        $child_op_argc == 1
           and
         (
-          $child->[1][0][1][0][0] eq '-PAREN'
+          $single_grandchild_op eq '-PAREN'
             or
-          $child->[1][0][1][0][0] eq '-LITERAL'
+          $single_grandchild_op eq '-LITERAL'
             or
-          $child->[1][0][1][0][0] eq '-PLACEHOLDER'
+          $single_grandchild_op eq '-PLACEHOLDER'
         )
       ) {
         push @children, @{$child->[1]};
@@ -757,16 +771,17 @@ sub _parenthesis_unroll {
 
       # a construct of ... ( somefunc ( ... ) ) ... can safely lose the outer parens
       # except for the case of ( NOT ( ... ) ) which has already been handled earlier
+      # and except for the case of RNO, where the double are explicit syntax
       elsif (
-        @{$child->[1]} == 1
+        $parent_op ne 'ROW_NUMBER() OVER'
           and
-        @{$child->[1][0][1]} == 1
+        $single_child_op
           and
-        $child->[1][0][0] ne 'NOT'
+        $single_child_op ne 'NOT'
           and
-        ref $child->[1][0][1][0] eq 'ARRAY'
+        $child_op_argc == 1
           and
-        $child->[1][0][1][0][0] eq '-PAREN'
+        $single_grandchild_op eq '-PAREN'
       ) {
         push @children, @{$child->[1]};
         $changes++;

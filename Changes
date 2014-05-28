@@ -1,8 +1,13 @@
 Revision history for SQL::Abstract
 
-TRIAL revision 1.99_01  2014-01-17
+revision 1.78  2014-05-28
 ----------------------------
-    - First cut of Data::Query-based SQLA for wider testing
+    - Fix parsing of binary ops to correctly take up only a single LHS
+      element, instead of gobbling up the entire parse-to-date
+    - Explicitly handle ROW_NUMBER() OVER as the snowflake-operator it is
+    - Improve signatures/documentation of is_same_sql_bind / eq_sql_bind
+    - Retire script/format-sql - the utility needs more work to be truly
+      end-user convenient
 
 revision 1.77  2014-01-17
 ----------------------------
@@ -45,7 +50,6 @@ revision 1.73  2012-07-10
     - Fix incorrect reporting of mismatch-members in SQLA::Test
     - Migrate the -ident operator from DBIC into SQLA
     - Migrate the -value operator from DBIC into SQLA
-    - Add support for NULLS FIRST/LAST in ORDER BY
 
 revision 1.72  2010-12-21
 ----------------------------

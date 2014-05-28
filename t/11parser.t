@@ -533,6 +533,122 @@ is_deeply($sqlat->parse( "SELECT [screen].[id], [screen].[name], [screen].[secti
   ]
 ], 'real life statement 1 parsed correctly');
 
+is_deeply($sqlat->parse("CASE WHEN FOO() > BAR()"), [
+  [
+    "-MISC",
+    [
+      [
+        "-LITERAL",
+        [
+          "CASE"
+        ]
+      ],
+      [
+        "-LITERAL",
+        [
+          "WHEN"
+        ]
+      ]
+    ]
+  ],
+  [
+    ">",
+    [
+      [
+        "FOO",
+        [
+          [
+            "-PAREN",
+            []
+          ]
+        ]
+      ],
+      [
+        "BAR",
+        [
+          [
+            "-PAREN",
+            []
+          ]
+        ]
+      ]
+    ]
+  ]
+]);
+
+is_deeply($sqlat->parse("SELECT [me].[id], ROW_NUMBER ( ) OVER (ORDER BY (SELECT 1)) AS [rno__row__index] FROM bar"), [
+  [
+    "SELECT",
+    [
+      [
+        "-LIST",
+        [
+          [
+            "-LITERAL",
+            [
+              "[me].[id]"
+            ]
+          ],
+          [
+            "AS",
+            [
+              [
+                "ROW_NUMBER() OVER",
+                [
+                  [
+                    "-PAREN",
+                    [
+                      [
+                        "ORDER BY",
+                        [
+                          [
+                            "-PAREN",
+                            [
+                              [
+                                "SELECT",
+                                [
+                                  [
+                                    "-LITERAL",
+                                    [
+                                      1
+                                    ]
+                                  ]
+                                ]
+                              ]
+                            ]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+                ]
+              ],
+              [
+                "-LITERAL",
+                [
+                  "[rno__row__index]"
+                ]
+              ]
+            ]
+          ]
+        ]
+      ]
+    ]
+  ],
+  [
+    "FROM",
+    [
+      [
+        "-LITERAL",
+        [
+          "bar"
+        ]
+      ]
+    ]
+  ]
+]);
+
+
 is_deeply($sqlat->parse("SELECT x, y FROM foo WHERE x IN (?, ?, ?, ?)"), [
   [
     "SELECT",
