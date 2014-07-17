@@ -22,7 +22,7 @@ BEGIN {
 # GLOBALS
 #======================================================================
 
-our $VERSION  = '1.78_01';
+our $VERSION  = '1.78_02';
 
 # This would confuse some packagers
 $VERSION = eval $VERSION if $VERSION =~ /_/; # numify for warning-free dev releases
@@ -99,13 +99,18 @@ sub is_plain_value ($) {
       (
         # FIXME - DBI needs fixing to stringify regardless of DBD
         #
+        # FIXME - simply using ->can('(""') trips up Path::Class in
+        # inexplicable ways under -T (likely other modules too)
+        #
         # either has stringification which DBI SHOULD prefer out of the box
-        $_[0]->can( '(""' )
+        grep { *{ (qq[${_}::(""]) }{CODE} } @{ mro::get_linear_isa( ref $_[0] ) }
           or
         # has nummification and fallback is *not* disabled
         # reuse @_ for even moar speedz
         (
-          $_[0]->can('(0+')
+          # FIXME - simply using ->can('(0+') trips up Path::Class in
+          # inexplicable ways under -T (likely other modules too)
+          grep { *{"${_}::(0+"}{CODE} } @{ mro::get_linear_isa( ref $_[0] ) }
             and
           (
             # no fallback specified at all
