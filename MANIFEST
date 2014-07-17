@@ -41,6 +41,7 @@ t/16no_sideeffects.t
 t/20injection_guard.t
 t/21op_ident.t
 t/22op_value.t
+t/23_is_X_value.t
 t/dbic/bulk-insert.t
 t/dbic/no-repeats.t
 t/dbic/show-progress.t

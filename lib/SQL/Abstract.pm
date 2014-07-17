@@ -6,11 +6,23 @@ use Carp ();
 use List::Util ();
 use Scalar::Util ();
 
+use Exporter 'import';
+our @EXPORT_OK = qw(is_plain_value is_literal_value);
+
+BEGIN {
+  if ($] < 5.009_005) {
+    require MRO::Compat;
+  }
+  else {
+    require mro;
+  }
+}
+
 #======================================================================
 # GLOBALS
 #======================================================================
 
-our $VERSION  = '1.78';
+our $VERSION  = '1.78_01';
 
 # This would confuse some packagers
 $VERSION = eval $VERSION if $VERSION =~ /_/; # numify for warning-free dev releases
@@ -57,6 +69,60 @@ sub puke (@) {
   my($func) = (caller(1))[3];
   Carp::croak "[$func] Fatal: ", @_;
 }
+
+sub is_literal_value ($) {
+    ref $_[0] eq 'SCALAR'                                     ? [ ${$_[0]} ]
+  : ( ref $_[0] eq 'REF' and ref ${$_[0]} eq 'ARRAY' )        ? [ @${ $_[0] } ]
+  : (
+    ref $_[0] eq 'HASH' and keys %{$_[0]} == 1
+      and
+    defined $_[0]->{-ident} and ! length ref $_[0]->{-ident}
+  )                                                           ? [ $_[0]->{-ident} ]
+  : undef;
+}
+
+# FIXME XSify - this can be done so much more efficiently
+sub is_plain_value ($) {
+  no strict 'refs';
+    ! length ref $_[0]                                        ? [ $_[0] ]
+  : (
+    ref $_[0] eq 'HASH' and keys %{$_[0]} == 1
+      and
+    exists $_[0]->{-value}
+  )                                                           ? [ $_[0]->{-value} ]
+  : (
+      Scalar::Util::blessed $_[0]
+        and
+      # deliberately not using Devel::OverloadInfo - the checks we are
+      # intersted in are much more limited than the fullblown thing, and
+      # this is a very hot piece of code
+      (
+        # FIXME - DBI needs fixing to stringify regardless of DBD
+        #
+        # either has stringification which DBI SHOULD prefer out of the box
+        $_[0]->can( '(""' )
+          or
+        # has nummification and fallback is *not* disabled
+        # reuse @_ for even moar speedz
+        (
+          $_[0]->can('(0+')
+            and
+          (
+            # no fallback specified at all
+            ! ( ($_[1]) = grep { *{"${_}::()"}{CODE} } @{ mro::get_linear_isa( ref $_[0] ) } )
+              or
+            # fallback explicitly undef
+            ! defined ${"$_[1]::()"}
+              or
+            # explicitly true
+            ${"$_[1]::()"}
+          )
+        )
+      )
+    )                                                          ? [ "$_[0]" ]
+  : undef;
+}
+
 
 
 #======================================================================
@@ -689,6 +755,14 @@ sub _where_op_VALUE {
   # in case we are called as a top level special op (no '=')
   my $lhs = shift;
 
+  # special-case NULL
+  if (! defined $rhs) {
+    return $lhs
+      ? $self->_convert($self->_quote($lhs)) . ' IS NULL'
+      : undef
+    ;
+  }
+
   my @bind =
     $self->_bindtype (
       ($lhs || $self->{_nested_func_lhs}),
@@ -764,6 +838,11 @@ sub _where_hashpair_HASHREF {
 
     # so that -not_foo works correctly
     $op =~ s/^not_/NOT /i;
+
+    # another retarded special case: foo => { $op => { -value => undef } }
+    if (ref $val eq 'HASH' and keys %$val == 1 and exists $val->{-value} and ! defined $val->{-value} ) {
+      $val = undef;
+    }
 
     my ($sql, @bind);
 
@@ -1262,10 +1341,11 @@ sub _quote {
   else {
     puke "Unsupported quote_char format: $_[0]->{quote_char}";
   }
+  my $esc = $_[0]->{escape_char} || $r;
 
   # parts containing * are naturally unquoted
   return join( $_[0]->{name_sep}||'', map
-    { $_ eq '*' ? $_ : $l . $_ . $r }
+    { $_ eq '*' ? $_ : do { (my $n = $_) =~ s/(\Q$esc\E|\Q$r\E)/$esc$1/g; $l . $n . $r } }
     ( $_[0]->{name_sep} ? split (/\Q$_[0]->{name_sep}\E/, $_[1] ) : $_[1] )
   );
 }
@@ -1676,15 +1756,12 @@ Which you could then use in DBI code like so:
 
 Easy, eh?
 
-=head1 FUNCTIONS
+=head1 METHODS
 
-The functions are simple. There's one for each major SQL operation,
+The methods are simple. There's one for each major SQL operation,
 and a constructor you use first. The arguments are specified in a
-similar order to each function (table, then fields, then a where
+similar order to each method (table, then fields, then a where
 clause) to try and simplify things.
-
-
-
 
 =head2 new(option => 'value')
 
@@ -1849,6 +1926,21 @@ that generates SQL like this:
 
 Quoting is useful if you have tables or columns names that are reserved
 words in your database's SQL dialect.
+
+=item escape_char
+
+This is the character that will be used to escape L</quote_char>s appearing
+in an identifier before it has been quoted.
+
+The paramter default in case of a single L</quote_char> character is the quote
+character itself.
+
+When opening-closing-style quoting is used (L</quote_char> is an arrayref)
+this parameter defaults to the B<closing (right)> L</quote_char>. Occurences
+of the B<opening (left)> L</quote_char> within the identifier are currently left
+untouched. The default for opening-closing-style quotes may change in future
+versions, thus you are B<strongly encouraged> to specify the escape character
+explicitly.
 
 =item name_sep
 
@@ -2031,6 +2123,47 @@ Might give you:
 
 You get the idea. Strings get their case twiddled, but everything
 else remains verbatim.
+
+=head1 EXPORTABLE FUNCTIONS
+
+=head2 is_plain_value
+
+Determines if the supplied argument is a plain value as understood by this
+module:
+
+=over
+
+=item * The value is C<undef>
+
+=item * The value is a non-reference
+
+=item * The value is an object with stringification overloading
+
+=item * The value is of the form C<< { -value => $anything } >>
+
+=back
+
+On failure returns C<undef>, on sucess returns a reference to a single
+element array containing the string-version of the supplied argument or
+C<[ undef ]> in case of an undefined initial argument.
+
+=head2 is_literal_value
+
+Determines if the supplied argument is a literal value as understood by this
+module:
+
+=over
+
+=item * C<\$sql_string>
+
+=item * C<\[ $sql_string, @bind_values ]>
+
+=item * C<< { -ident => $plain_defined_string } >>
+
+=back
+
+On failure returns C<undef>, on sucess returns a reference to an array
+cotaining the unpacked version of the supplied literal SQL and bind values.
 
 =head1 WHERE CLAUSES
 

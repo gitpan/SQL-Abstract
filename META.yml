@@ -28,6 +28,7 @@ no_index:
   package:
     - DBIx::Class::Storage::Debug::PrettyPrint
 requires:
+  Exporter: 5.57
   Hash::Merge: 0.12
   List::Util: 0
   Moo: 1.004002
@@ -37,4 +38,4 @@ resources:
   bugtracker: http://rt.cpan.org/NoAuth/Bugs.html?Dist=SQL-Abstract
   license: http://dev.perl.org/licenses/
   repository: git://git.shadowcat.co.uk/dbsrgits/SQL-Abstract.git
-version: 1.78
+version: 1.78_01
