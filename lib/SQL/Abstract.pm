@@ -22,7 +22,7 @@ BEGIN {
 # GLOBALS
 #======================================================================
 
-our $VERSION  = '1.78_02';
+our $VERSION  = '1.78_03';
 
 # This would confuse some packagers
 $VERSION = eval $VERSION if $VERSION =~ /_/; # numify for warning-free dev releases
@@ -91,7 +91,8 @@ sub is_plain_value ($) {
     exists $_[0]->{-value}
   )                                                           ? [ $_[0]->{-value} ]
   : (
-      Scalar::Util::blessed $_[0]
+      # reuse @_ for even moar speedz
+      defined ( $_[1] = Scalar::Util::blessed $_[0] )
         and
       # deliberately not using Devel::OverloadInfo - the checks we are
       # intersted in are much more limited than the fullblown thing, and
@@ -99,32 +100,31 @@ sub is_plain_value ($) {
       (
         # FIXME - DBI needs fixing to stringify regardless of DBD
         #
-        # FIXME - simply using ->can('(""') trips up Path::Class in
-        # inexplicable ways under -T (likely other modules too)
+        # simply using ->can('(""') can leave behind stub methods that
+        # break actually using the overload later (see L<perldiag/Stub
+        # found while resolving method "%s" overloading "%s" in package
+        # "%s"> and the source of overload::mycan())
         #
         # either has stringification which DBI SHOULD prefer out of the box
-        grep { *{ (qq[${_}::(""]) }{CODE} } @{ mro::get_linear_isa( ref $_[0] ) }
+        grep { *{ (qq[${_}::(""]) }{CODE} } @{ $_[2] = mro::get_linear_isa( $_[1] ) }
           or
         # has nummification and fallback is *not* disabled
-        # reuse @_ for even moar speedz
         (
-          # FIXME - simply using ->can('(0+') trips up Path::Class in
-          # inexplicable ways under -T (likely other modules too)
-          grep { *{"${_}::(0+"}{CODE} } @{ mro::get_linear_isa( ref $_[0] ) }
+          grep { *{"${_}::(0+"}{CODE} } @{ mro::get_linear_isa( $_[1] ) }
             and
           (
             # no fallback specified at all
-            ! ( ($_[1]) = grep { *{"${_}::()"}{CODE} } @{ mro::get_linear_isa( ref $_[0] ) } )
+            ! ( ($_[3]) = grep { *{"${_}::()"}{CODE} } @{$_[2]} )
               or
             # fallback explicitly undef
-            ! defined ${"$_[1]::()"}
+            ! defined ${"$_[3]::()"}
               or
             # explicitly true
-            ${"$_[1]::()"}
+            !! ${"$_[3]::()"}
           )
         )
       )
-    )                                                          ? [ "$_[0]" ]
+    )                                                          ? [ $_[0] ]
   : undef;
 }
 
@@ -738,8 +738,8 @@ sub _where_op_BOOL {
 sub _where_op_IDENT {
   my $self = shift;
   my ($op, $rhs) = splice @_, -2;
-  if (ref $rhs) {
-    puke "-$op takes a single scalar argument (a quotable identifier)";
+  if (! defined $rhs or length ref $rhs) {
+    puke "-$op requires a single plain scalar argument (a quotable identifier)";
   }
 
   # in case we are called as a top level special op (no '=')
