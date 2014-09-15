@@ -3,9 +3,14 @@ use strict;
 
 use Test::More;
 use Test::Exception;
+use Scalar::Util 'refaddr';
 use Storable 'nfreeze';
 
 use SQL::Abstract qw(is_plain_value is_literal_value);
+
+# fallback setting is inheriting starting p5 50853fa9 (run up to 5.17.0)
+use constant OVERLOAD_FALLBACK_INHERITS => ( ($] < 5.017) ? 0 : 1 );
+use constant STRINGIFIER_CAN_RETURN_IVS => ( ($] < 5.008) ? 0 : 1 );
 
 {
   package # hideee
@@ -43,49 +48,127 @@ use SQL::Abstract qw(is_plain_value is_literal_value);
 }
 
 {
+  package # hideee
+    SQLATest::AnalInt;
+
+  use overload
+    fallback => 0,
+    '0+' => sub { ${$_[0]} },
+  ;
+
+  package # hideee
+    SQLATest::AnalInt::Subclass;
+
+  use overload
+    '0+' => sub { ${$_[0]} },
+  ;
+
+  our @ISA = 'SQLATest::AnalInt';
+}
+
+{
   package # hidee
     SQLATest::ReasonableInt;
 
+  # make it match JSON::PP::Boolean
   use overload
     '0+' => sub { ${$_[0]} },
     '++' => sub { $_[0] = ${$_[0]} + 1 },
     '--' => sub { $_[0] = ${$_[0]} - 1 },
     fallback => 1,
   ;
+
+  package # hideee
+    SQLATest::ReasonableInt::Subclass;
+
+  our @ISA = 'SQLATest::ReasonableInt';
 }
 
-# make sure we recognize overloaded stuff properly
-lives_ok {
-  my $num = bless( \do { my $foo = 69 }, 'SQLATest::SillyInt::Subclass' );
-
-  # is_deeply does not do nummify/stringify cmps properly
-  # but we can always compare the ice
-  ok(
-    ( nfreeze( is_plain_value $num ) eq nfreeze( [ $num ] ) ),
-    'parent-fallback-provided stringification detected'
-  );
-  is("$num", 69, 'test overloaded object stringifies, without specified fallback');
-} 'overload testing lives';
-
 {
-  my $nummifiable_maybefallback_num = bless( \do { my $foo = 42 }, 'SQLATest::SillierInt::Subclass' );
-  lives_ok {
-    ok( ( $nummifiable_maybefallback_num + 1) == 43 )
-  };
+  package # hidee
+    SQLATest::ReasonableString;
 
-  my $is_pv_res = is_plain_value $nummifiable_maybefallback_num;
+  # somewhat like DateTime
+  use overload
+    'fallback' => 1,
+    '""'       => sub { "${$_[0]}" },
+    '-'        => sub { ${$_[0]} - $_[1] },
+    '+'        => sub { ${$_[0]} + $_[1] },
+  ;
 
-  # this perl can recognize inherited fallback
-  if ( !! eval { "$nummifiable_maybefallback_num" } ) {
-    # we may *not* be able to compare, due to ""-derived-eq fallbacks missing,
-    # but we can always compare the ice
-    ok (
-      ( nfreeze( $is_pv_res ) eq nfreeze( [ $nummifiable_maybefallback_num ] ) ),
-      'parent-disabled-fallback stringification matches that of perl'
-    );
-  }
-  else {
-    is $is_pv_res, undef, 'parent-disabled-fallback stringification matches that of perl';
+  package # hideee
+    SQLATest::ReasonableString::Subclass;
+
+  our @ISA = 'SQLATest::ReasonableString';
+}
+
+for my $case (
+  { class => 'SQLATest::SillyInt',            can_math => 0, should_str => 1 },
+  { class => 'SQLATest::SillyInt::Subclass',  can_math => 0, should_str => 1 },
+  { class => 'SQLATest::SillierInt',          can_math => 0, should_str => 0 },
+  { class => 'SQLATest::SillierInt::Subclass',can_math => 1, should_str => (OVERLOAD_FALLBACK_INHERITS ? 0 : 1) },
+  { class => 'SQLATest::AnalInt',             can_math => 0, should_str => 0 },
+  { class => 'SQLATest::AnalInt::Subclass',   can_math => 0, should_str => (OVERLOAD_FALLBACK_INHERITS ? 0 : 1) },
+  { class => 'SQLATest::ReasonableInt',             can_math => 1, should_str => 1 },
+  { class => 'SQLATest::ReasonableInt::Subclass',   can_math => 1, should_str => 1 },
+  { class => 'SQLATest::ReasonableString',          can_math => 1, should_str => 1 },
+  { class => 'SQLATest::ReasonableString::Subclass',can_math => 1, should_str => 1 },
+) {
+
+  my $num = bless( \do { my $foo = 42 }, $case->{class} );
+
+  my $can_str = eval { "$num" eq 42 } || 0;
+
+  ok (
+    !($can_str xor $case->{should_str}),
+    "should_str setting for $case->{class} matches perl behavior",
+  ) || diag explain { %$case, can_str => $can_str };
+
+  my $can_math = eval { ($num + 1) == 43 } ? 1 : 0;
+
+  ok (
+    !($can_math xor $case->{can_math}),
+    "can_math setting for $case->{class} matches perl behavior",
+  ) || diag explain { %$case, actual_can_math => $can_math };
+
+  my $can_cmp = eval { my $dum = ($num eq "nope"); 1 } || 0;
+
+  for (1,2) {
+
+    if ($can_str) {
+
+      ok $num, 'bool ctx works';
+
+      if (STRINGIFIER_CAN_RETURN_IVS and $can_cmp) {
+        is_deeply(
+          is_plain_value $num,
+          \$num,
+          "stringification detected on $case->{class}",
+        ) || diag explain $case;
+      }
+      else {
+        # is_deeply does not do nummify/stringify cmps properly
+        # but we can always compare the ice
+        ok(
+          ( nfreeze( is_plain_value $num ) eq nfreeze( \$num ) ),
+          "stringification without cmp capability detected on $case->{class}"
+        ) || diag explain $case;
+      }
+
+      is (
+        refaddr( ${is_plain_value($num)} ),
+        refaddr $num,
+        "Same reference (blessed object) returned",
+      );
+    }
+    else {
+      is( is_plain_value($num), undef, "non-stringifiable $case->{class} object detected" )
+        || diag explain $case;
+    }
+
+    if ($case->{can_math}) {
+      is ($num+1, 43);
+    }
   }
 }
 
@@ -95,7 +178,7 @@ lives_ok {
   cmp_ok(--$num, 'eq', 23, 'test overloaded object compares correctly');
   is_deeply(
     is_plain_value $num,
-    [ 23 ],
+    \23,
     'fallback stringification detected'
   );
   cmp_ok(--$num, 'eq', 22, 'test overloaded object compares correctly');
@@ -105,7 +188,7 @@ lives_ok {
 
 is_deeply
   is_plain_value {  -value => [] },
-  [ [] ],
+  \[],
   '-value recognized'
 ;
 
@@ -120,7 +203,7 @@ for ([], {}, \'') {
 for (undef, { -value => undef }) {
   is_deeply
     is_plain_value $_,
-    [ undef ],
+    \undef,
     'NULL -value recognized'
   ;
 }
