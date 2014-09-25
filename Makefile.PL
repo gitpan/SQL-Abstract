@@ -8,7 +8,7 @@ perl_version '5.006';
 name 'SQL-Abstract';
 author 'Nathan Wiger <nate@wiger.org>';
 resources 'license'     => 'http://dev.perl.org/licenses/';
-resources 'repository'  => 'git://git.shadowcat.co.uk/dbsrgits/SQL-Abstract.git';
+resources 'repository'  => 'https://github.com/dbsrgits/sql-abstract/';
 resources 'bugtracker'  => 'http://rt.cpan.org/NoAuth/Bugs.html?Dist=SQL-Abstract';
 resources 'IRC'         => 'irc://irc.perl.org/#dbix-class';
 
@@ -19,6 +19,7 @@ dynamic_config 0;
 requires 'List::Util'   => 0;
 requires 'Scalar::Util' => 0;
 requires 'Exporter'     => 5.57;
+requires 'MRO::Compat'  => 0.12;
 requires 'Moo'          => 1.004002;
 requires 'Hash::Merge'  => 0.12;
 
